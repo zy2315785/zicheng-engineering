@@ -37,7 +37,7 @@ let dataset={documents:[]},toastTimer,modalFocus=null,previousModalFocus=null;
 const app=document.querySelector('#app');
 function project(){return PROJECTS.find(p=>p.id===state.project)??PROJECTS[5]}
 function documents(){return [...dataset.documents,...state.imports]}
-function projectAssets(){return dataset.assetsByProject?.[state.project]??dataset.assets??{}}
+function projectAssets(){const a=dataset.assetsByProject?.[state.project]??dataset.assets;return a&&Object.keys(a).length?a:{hero:`assets/${state.project}-hero.webp`,card:`assets/${state.project}-card.webp`}}
 function findDocument(id){const local=documents().find(d=>d.id===id&&d.project===state.project);if(local)return local;const sources=state.history.filter(h=>h.project===state.project).flatMap(h=>h.messages.flatMap(m=>m.result?.sources??[])).filter(s=>s.doc.id===id);return sources.length?{...sources[0].doc,chunks:sources.map(s=>s.chunk).filter(Boolean)}:null}
 function currentDocs(){return documents().filter(d=>d.project===state.project)}
 function counts(){const d=currentDocs();return {all:d.length,indexed:d.filter(x=>x.status==='indexed').length,ocr:d.filter(x=>x.status==='ocr').length,drawing:d.filter(x=>x.status==='drawing').length}}
