@@ -8,7 +8,12 @@
 //   3. ima 的 apiKey 只在函数内部使用，永不下发给浏览器。
 //   4. media_id 做格式白名单校验，避免被当成任意转发器。
 
+import { getStore } from '../_lib/pages-blob.js';
+
 const IMA_BASE = 'https://ima.qq.com/openapi/wiki/v1/';
+const BLOB_STORE = 'zc-index';
+const BLOB_PROJECT = 'makers-cnwks8jmg4xl';
+const PROJECT_KEYS = ['ruibang', 'huoju'];
 
 const CATEGORY_RULES = [
   [['效果图'], '项目形象'],
@@ -226,28 +231,29 @@ async function searchFiles(env, kbId, query, limit = 8) {
 
 const SYSTEM_PROMPT = [
   '你是子城联合工程部的工程资料助手。',
-  '你只能依据下面提供的“命中文件清单”作答，禁止编造文件内容或不存在的文件。',
-  '回答要求：先一句话结论，再列出最相关的 1-3 份文件（写全文件名），最后说明还需要核对什么。',
-  '如果清单里没有相关文件，直接说没有找到，并建议换个关键词。',
-  '全部用简体中文，控制在一百五十字以内。',
+  '下面会给你从项目资料里检索到的原文摘录（可能来自扫描件的逐页转写）。',
+  '请严格依据这些摘录回答，禁止编造摘录里没有的内容、日期、金额或条款。',
+  '回答结构：先用一句话给出结论；再逐条列出依据，每条注明出自哪份文件（写全文件名）；最后如果信息不完整，明确指出还缺什么。',
+  '摘录里若有「看不清」或「[?]」标记，说明原件该处不清，需如实说明。',
+  '全部用简体中文，控制在两百字以内。',
 ].join('\n');
 
-async function answerWithModel(env, question, files, history) {
+async function answerWithModel(env, question, items, history) {
   const apiKey = env.DEEPSEEK_API_KEY;
   if (!apiKey) throw new Error('未配置 DEEPSEEK_API_KEY');
   const base = (env.DEEPSEEK_BASE || 'https://api.deepseek.com').replace(/\/+$/, '');
   const model = env.DEEPSEEK_MODEL || 'deepseek-chat';
 
-  const listing = files.length
-    ? files.map((f, i) => `${i + 1}. ${f.title}（路径：${f.path}）`).join('\n')
-    : '（无命中文件）';
+  const context = items.length
+    ? items.map((it, i) => `【摘录${i + 1}】${it.name}${it.path && it.path !== it.name ? '（' + it.path + '）' : ''}\n${String(it.text || '').slice(0, 900)}`).join('\n\n')
+    : '（没有检索到相关原文摘录）';
 
   const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
   for (const turn of (history || []).slice(-3)) {
     if (turn && turn.question) messages.push({ role: 'user', content: String(turn.question).slice(0, 300) });
     if (turn && turn.answer) messages.push({ role: 'assistant', content: String(turn.answer).slice(0, 300) });
   }
-  messages.push({ role: 'user', content: `问题：${question}\n\n命中文件清单：\n${listing}` });
+  messages.push({ role: 'user', content: `问题：${question}\n\n${context}` });
 
   const response = await fetch(`${base}/chat/completions`, {
     method: 'POST',
@@ -261,6 +267,59 @@ async function answerWithModel(env, question, files, history) {
     throw error;
   }
   return { text: payload?.choices?.[0]?.message?.content || '', model };
+}
+
+// 从 Blob 读取某个项目的正文索引，边缘缓存 10 分钟避免反复拉 1-2MB。
+async function loadIndex(env, project) {
+  const key = `${project}.json`;
+  const cacheKey = `https://zc-index-cache.internal/${key}`;
+  let cache = null;
+  try { cache = typeof caches !== 'undefined' ? caches.default : null; } catch { cache = null; }
+  if (cache) {
+    try { const hit = await cache.match(cacheKey); if (hit) return await hit.json(); } catch { /* 缓存不可用 */ }
+  }
+  const store = env.BLOB_TOKEN
+    ? getStore({ name: BLOB_STORE, projectId: env.BLOB_PROJECT_ID || BLOB_PROJECT, token: env.BLOB_TOKEN })
+    : getStore(BLOB_STORE);
+  const data = await store.get(key, { type: 'json' });
+  if (cache && data) {
+    try {
+      await cache.put(cacheKey, new Response(JSON.stringify(data), {
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'max-age=600' },
+      }));
+    } catch { /* 写缓存失败不影响返回 */ }
+  }
+  return data;
+}
+
+// 关键词打分：命中次数 × 词长权重，文件名命中额外加权。
+function scoreIndex(index, question) {
+  const terms = planQueries(question).concat(
+    String(question).match(/[\u4e00-\u9fa5]{2,6}|[A-Za-z0-9]{2,}/g) || []
+  );
+  const unique = [...new Set(terms)].filter(t => t.length >= 2).slice(0, 12);
+  const hits = [];
+  for (const doc of index.docs || []) {
+    const nameHit = unique.reduce((s, t) => s + (doc.name.includes(t) ? 3 : 0), 0);
+    for (const chunk of doc.chunks || []) {
+      const text = chunk.text || '';
+      let score = nameHit;
+      for (const term of unique) {
+        let from = 0;
+        let count = 0;
+        while (count < 5) {
+          const at = text.indexOf(term, from);
+          if (at === -1) break;
+          count += 1;
+          from = at + term.length;
+        }
+        if (count) score += count * (term.length >= 4 ? 3 : 2);
+      }
+      if (score > 0) hits.push({ doc, chunk, score });
+    }
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return hits.slice(0, 6);
 }
 
 export default async function onRequest(context) {
@@ -304,32 +363,64 @@ export default async function onRequest(context) {
       const question = String(body.question || '').trim().slice(0, 2000);
       if (!question) return json({ ok: false, message: '问题不能为空' }, 400);
 
-      const { kbId } = await findKnowledgeBase(env);
-      const collected = new Map();
-      for (const query of planQueries(question)) {
-        if (collected.size >= 8) break;
-        for (const hit of await searchFiles(env, kbId, query, 8)) {
-          if (!collected.has(hit.media_id)) collected.set(hit.media_id, hit);
-        }
-      }
-      const hits = [...collected.values()].slice(0, 8);
-      const { text, model } = await answerWithModel(env, question, hits, body.history);
+      const project = String(body.project || '').trim();
+      const indexProject = PROJECT_KEYS.includes(project) ? project : PROJECT_KEYS[0];
+      let items = [];
+      let mode = 'ima';
 
-      const sources = hits.slice(0, 3).map(file => ({
-        doc: {
-          id: file.media_id,
+      // 优先用 Blob 里的正文索引；不可用或没命中时才回退 ima 文件检索
+      try {
+        const index = await loadIndex(env, indexProject);
+        if (index && Array.isArray(index.docs)) {
+          const scored = scoreIndex(index, question);
+          if (scored.length) {
+            mode = 'index';
+            items = scored.map(h => ({
+              name: h.doc.name,
+              path: h.doc.path || h.doc.name,
+              text: h.chunk.text || '',
+              doc: h.doc,
+              chunk: h.chunk,
+            }));
+          }
+        }
+      } catch (error) { /* Blob 未配置或不可用，走 ima 回退 */ }
+
+      if (!items.length) {
+        const { kbId } = await findKnowledgeBase(env);
+        const collected = new Map();
+        for (const query of planQueries(question)) {
+          if (collected.size >= 8) break;
+          for (const hit of await searchFiles(env, kbId, query, 8)) {
+            if (!collected.has(hit.media_id)) collected.set(hit.media_id, hit);
+          }
+        }
+        items = [...collected.values()].slice(0, 8).map(file => ({
           name: file.title,
           path: file.path,
-          type: extension(file.title),
-          category: category(file.path),
-          project: '',
+          text: '',
+          doc: { mediaId: file.media_id, name: file.title },
+          chunk: null,
+        }));
+      }
+
+      const { text, model } = await answerWithModel(env, question, items, body.history);
+
+      const sources = items.slice(0, 3).map(item => ({
+        doc: {
+          id: item.doc.mediaId || item.doc.id,
+          name: item.name,
+          path: item.path,
+          type: extension(item.name),
+          category: category(item.path || item.name),
+          project: indexProject,
           source: 'ima',
           size: null,
         },
-        chunk: { location: 'ima 检索命中', text: '' },
+        chunk: { location: item.chunk?.loc || (item.text ? '正文摘录' : 'ima 检索命中'), text: (item.text || '').slice(0, 200) },
       }));
 
-      return json({ ok: true, text, sources, model: { provider: 'DeepSeek', connected: true, name: model }, files: hits.length });
+      return json({ ok: true, text, sources, mode, model: { provider: 'DeepSeek', connected: true, name: model }, files: items.length });
     }
 
     return json({ ok: false, message: '接口不存在' }, 404);
