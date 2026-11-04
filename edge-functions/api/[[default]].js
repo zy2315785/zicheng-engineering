@@ -231,16 +231,6 @@ export default async function onRequest(context) {
       });
     }
 
-    if (route === '/api/_probe') {
-      const safeNames = Object.keys(env).filter(k => !/KEY|PASS|SECRET|TOKEN/i.test(k));
-      return json({
-        ok: true,
-        hasModelKey: Boolean(env.MAKERS_MODELS_KEY || env.AI_GATEWAY_API_KEY),
-        modelEnvName: env.MAKERS_MODELS_KEY ? 'MAKERS_MODELS_KEY' : env.AI_GATEWAY_API_KEY ? 'AI_GATEWAY_API_KEY' : null,
-        safeEnvNames: safeNames,
-      });
-    }
-
     return json({ ok: false, message: '接口不存在' }, 404);
   } catch (error) {
     const message = error && error.upstream ? String(error.message) : '服务暂时不可用，请稍后重试';
