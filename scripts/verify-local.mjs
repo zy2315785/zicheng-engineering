@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const base='http://127.0.0.1:4173';
+let r=await fetch(base);assert.equal(r.status,200);assert.match(await r.text(),/子城联合工程部/);
+r=await fetch(base+'/api/health');assert.equal((await r.json()).service,'zicheng-local');
+const data=JSON.parse(fs.readFileSync(new URL('../dist/project-data.json',import.meta.url),'utf8'));
+const d=data.documents.find(d=>d.type==='pdf'&&d.status==='indexed');
+r=await fetch(`${base}/api/files/${d.id}`,{method:'HEAD'});assert.equal(r.status,200);assert.match(r.headers.get('content-type'),/application\/pdf/);assert.equal(Number(r.headers.get('content-length')),d.size);
+r=await fetch(`${base}/api/files/${d.id}`,{headers:{Range:'bytes=0-4'}});assert.equal(r.status,206);assert.equal(await r.text(),'%PDF-');
+r=await fetch(base+'/api/files/not-in-index');assert.equal(r.status,404);
+r=await fetch(base+'/api/health',{headers:{Origin:'https://example.com'}});assert.equal(r.status,403);
+r=await fetch(base+'/server.mjs');assert.equal(r.status,404);
+console.log('本地页面、健康检查、PDF预览范围请求及文件访问边界检查通过。');

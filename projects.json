@@ -1,0 +1,63 @@
+[
+  {
+    "id": "changshui",
+    "name": "长水新苑"
+  },
+  {
+    "id": "zhilian-innovation",
+    "name": "嘉兴空港智联创新园"
+  },
+  {
+    "id": "zhilian-industry",
+    "name": "嘉兴空港智联产业园"
+  },
+  {
+    "id": "meili",
+    "name": "供销梅里智能云仓"
+  },
+  {
+    "id": "solar",
+    "name": "高效薄膜太阳能组件配套制造项目二期土建工程"
+  },
+  {
+    "id": "ruibang",
+    "name": "瑞邦国际大厦项目",
+    "connected": true,
+    "folder": "瑞邦国际大厦",
+    "imaFolder": "瑞邦国际大厦",
+    "baiduFolder": "瑞邦国际大厦",
+    "images": {
+      "hero": "1.jpg",
+      "card": "3.jpg"
+    }
+  },
+  {
+    "id": "xiuyuan",
+    "name": "秀园路(火炬路-万福桥港)道路工程"
+  },
+  {
+    "id": "substation",
+    "name": "嘉兴国家高新区王店建设片新型创新园及配套设施项目-110KV变电站"
+  },
+  {
+    "id": "huayuan",
+    "name": "王店镇花园路西侧、汇凯路北侧地块建设项目（2025嘉秀洲-039号）"
+  },
+  {
+    "id": "jiade",
+    "name": "浙江嘉德绝热科技有限公司年产7000吨绝热保温材料生产基地建设项目"
+  },
+  {
+    "id": "huoju",
+    "name": "火炬高新汽车新制造产业厂房（汽车电子智能工厂）项目设计采购施工总承包（EPC）",
+    "connected": true,
+    "folder": "火炬高新汽车新制造产业厂房(汽车电子智能工厂)项目设计采购施工总承包(EPC)",
+    "imaFolder": "火炬高新汽车新制造产业厂房(汽车电子智能工厂)项目设计采购施工总承包(EPC)",
+    "baiduFolder": "火炬高新汽车新制造产业厂房(汽车电子智能工厂)项目设计采购施工总承包(EPC)",
+    "images": {
+      "hero": "鸟瞰.jpg",
+      "card": "生产厂房.jpg"
+    },
+    "shortName": "火炬汽车电子智能工厂项目"
+  }
+]

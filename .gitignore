@@ -1,0 +1,26 @@
+# ---------- 运行环境与依赖 ----------
+node_modules/
+runtime/
+.sites-local/
+
+# ---------- 凭证与本地配置：任何情况下都不提交 ----------
+.env
+.env.*
+!.env.example
+.local/
+
+# ---------- 日志、临时文件、产物 ----------
+*.log
+tmp/
+output/
+*.zip
+dist/*.tmp
+dist/project-data.original.json
+
+# ---------- 项目原件目录：资料不是代码 ----------
+瑞邦国际大厦/
+火炬高新汽车新制造产业厂房*/
+
+# 注意：dist/project-data.json 是有意保留的发布数据（静态站需要它）。
+# 仓库必须保持 Private。若要转为公开仓库，先运行：
+#   node scripts/sanitize-project-data.mjs
