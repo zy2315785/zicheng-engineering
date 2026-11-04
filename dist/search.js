@@ -1,4 +1,4 @@
-export {PROJECTS} from './projects.mjs';
+export {PROJECTS} from './projects.js';
 
 const groups = [
   ['临电','临时用电','箱变','800kva','供电'],

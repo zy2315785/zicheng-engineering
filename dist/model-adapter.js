@@ -1,4 +1,4 @@
-import {answerQuestion} from './search.mjs';
+import {answerQuestion} from './search.js';
 
 /** Model and cloud credentials stay in the backend. Offline fallback is explicitly local retrieval. */
 function localAnswer(documents,question,options){

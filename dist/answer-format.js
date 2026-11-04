@@ -1,4 +1,4 @@
-import {escapeHtml} from './search.mjs';
+import {escapeHtml} from './search.js';
 const inline=value=>escapeHtml(value).replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>').replace(/`([^`\n]+)`/g,'<code>$1</code>');
 export function formatAnswer(value){
  const lines=String(value??'').replace(/\r/g,'').split('\n'),out=[];

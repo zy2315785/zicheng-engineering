@@ -1,5 +1,5 @@
-import {PROJECTS} from './projects.mjs';
-import {escapeHtml as e} from './search.mjs';
+import {PROJECTS} from './projects.js';
+import {escapeHtml as e} from './search.js';
 
 export function fileLocation(doc,{root='/AI'}={}){
  const project=PROJECTS.find(p=>p.id===doc?.project&&p.connected);
