@@ -21,9 +21,9 @@ export function sourceLocations(sources=[],{root='/AI'}={}){
   if(source.chunk?.location)group.locations.add(source.chunk.location);
  });
  if(!groups.size)return '';
- return '<section class="source-locations" aria-label="回答依据的文件位置"><div class="source-location-heading">文件位置 <span>百度网盘 · 原件可追溯</span></div>'+[...groups.values()].map(({doc,refs,locations})=>{
+ return '<section class="source-locations" aria-label="回答依据的文件位置"><div class="source-location-heading">文件位置 <span>ima · 原件可追溯</span></div>'+[...groups.values()].map(({doc,refs,locations})=>{
   const location=fileLocation(doc,{root});
-  const content='<span class="location-refs">'+refs.map(n=>'<span class="citation-number">'+n+'</span>').join('')+'</span><span class="location-copy"><strong>'+e(doc.name)+'</strong><small>'+e([...locations].join(' · ')||'文件目录')+'</small><span class="location-path">'+e(location?.path??'浏览器临时导入 · 尚无网盘位置')+'</span></span>';
-  return '<div class="source-location-row"><div class="source-location">'+content+'</div>'+(location?'<a class="location-download" href="/api/download/'+encodeURIComponent(doc.id)+'" target="_blank" rel="noopener" data-cloud="download" aria-label="从百度网盘下载 '+e(doc.name)+'">下载原件 <span class="download-arrow" aria-hidden="true">↓</span></a>':'')+'</div>';
+  const content='<span class="location-refs">'+refs.map(n=>'<span class="citation-number">'+n+'</span>').join('')+'</span><span class="location-copy"><strong>'+e(doc.name)+'</strong><small>'+e([...locations].join(' · ')||'文件目录')+'</small><span class="location-path">'+e(location?.path??'ima 云端 · 可直接下载')+'</span></span>';
+  return '<div class="source-location-row"><div class="source-location">'+content+'</div>'+(doc.id?'<a class="location-download" href="/api/file?id='+encodeURIComponent(doc.id)+'&name='+encodeURIComponent(doc.name)+'" target="_blank" rel="noopener" aria-label="从 ima 下载 '+e(doc.name)+'">下载原件 <span class="download-arrow" aria-hidden="true">↓</span></a>':'')+'</div>';
  }).join('')+'</section>';
 }
