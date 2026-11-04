@@ -65,13 +65,10 @@ function authorized(request, env) {
 }
 
 function unauthorized() {
-  return new Response('需要登录后访问', {
+  // 刻意不带 WWW-Authenticate：避免浏览器弹出原生登录框卡住首屏。
+  return new Response(JSON.stringify({ ok: false, message: '该接口未开放访问' }), {
     status: 401,
-    headers: {
-      'WWW-Authenticate': 'Basic realm="zicheng-engineering", charset="UTF-8"',
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Cache-Control': 'no-store',
-    },
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
   });
 }
 
@@ -170,7 +167,8 @@ async function buildCatalogue(env) {
 
 export default async function onRequest(context) {
   const { request, env } = context;
-  if (!authorized(request, env)) return unauthorized();
+  // 默认不校验。需要重新加锁时，在 EdgeOne 环境变量里设置 REQUIRE_AUTH=1 即可，无需改代码。
+  if (env.REQUIRE_AUTH === '1' && !authorized(request, env)) return unauthorized();
 
   const url = new URL(request.url);
   const route = url.pathname.replace(/\/+$/, '');
