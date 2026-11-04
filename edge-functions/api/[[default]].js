@@ -79,7 +79,9 @@ function json(data, status = 200) {
   });
 }
 
-async function imaCall(env, method, body) {
+const sleep = ms => new Promise(resolve => { try { setTimeout(resolve, ms); } catch { resolve(); } });
+
+async function imaCall(env, method, body, attempt = 0) {
   const response = await fetch(IMA_BASE + method, {
     method: 'POST',
     headers: {
@@ -91,6 +93,11 @@ async function imaCall(env, method, body) {
   });
   const payload = await response.json();
   if (payload.code !== 0) {
+    // 200001 = 请求频率超限，退避重试两次
+    if (payload.code === 200001 && attempt < 2) {
+      await sleep(600 * (attempt + 1));
+      return imaCall(env, method, body, attempt + 1);
+    }
     const error = new Error(`ima ${method} 失败：${payload.code} ${payload.msg || ''}`);
     error.upstream = true;
     throw error;
@@ -165,6 +172,30 @@ async function buildCatalogue(env) {
   };
 }
 
+const CACHE_KEY = 'https://zc-internal.cache/api-documents-v1';
+const CACHE_SECONDS = 600;
+
+// 目录结果缓存 10 分钟，避免每次打开页面都完整遍历一遍 ima（会触发频率限制）。
+async function getCatalogue(env) {
+  let cache = null;
+  try { cache = typeof caches !== 'undefined' ? caches.default : null; } catch { cache = null; }
+  if (cache) {
+    try {
+      const hit = await cache.match(CACHE_KEY);
+      if (hit) return await hit.json();
+    } catch { /* 缓存不可用时直接走实时请求 */ }
+  }
+  const data = await buildCatalogue(env);
+  if (cache) {
+    try {
+      await cache.put(CACHE_KEY, new Response(JSON.stringify(data), {
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `max-age=${CACHE_SECONDS}` },
+      }));
+    } catch { /* 写入失败不影响本次返回 */ }
+  }
+  return data;
+}
+
 export default async function onRequest(context) {
   const { request, env } = context;
   // 默认不校验。需要重新加锁时，在 EdgeOne 环境变量里设置 REQUIRE_AUTH=1 即可，无需改代码。
@@ -175,7 +206,7 @@ export default async function onRequest(context) {
 
   try {
     if (route === '/api/documents') {
-      return json(await buildCatalogue(env));
+      return json(await getCatalogue(env));
     }
 
     if (route === '/api/file') {
