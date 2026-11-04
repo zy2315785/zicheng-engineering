@@ -196,6 +196,73 @@ async function getCatalogue(env) {
   return data;
 }
 
+async function findKnowledgeBase(env) {
+  const kbName = env.IMA_KB_NAME || '子城';
+  const search = await imaCall(env, 'search_knowledge_base', { query: kbName, cursor: '', limit: 20 });
+  const kb = (search.info_list || []).find(b => (b.name || b.kb_name) === kbName);
+  if (!kb) throw new Error(`ima 中没有名为「${kbName}」的知识库`);
+  return { kbId: kb.id || kb.kb_id, kbName };
+}
+
+// ima 的检索是关键词匹配，整句问句往往零命中，需要先拆出工程术语。
+const TERMS = ['施工许可证', '施工许可', '施工图审查', '图审', '总进度', '倒排计划', '进度计划', '施工组织设计', '专项施工方案', '基坑围护', '地质勘察', '勘察报告', '规划许可证', '用地许可证', '开工报告', '竣工验收', '质量监督', '安全监督', '招标文件', '中标通知书', '工程合同', '工程量清单', '预算', '会议纪要', '联系单', '变更', '监理', '消防', '人防', '节能', '防雷', '国防光缆', '临电', '临时用电', '箱变', '管线', '给水', '排水', '光缆', '燃气', '自来水', '效果图', '图纸', '设计', '审图', '勘察', '桩基', '合同', '协议', '保函', '复工', '安全', '值班'];
+
+function planQueries(question) {
+  const text = String(question).replace(/[？?。！!，,、；;：:\s]+/g, ' ').trim();
+  const queries = [];
+  const add = value => { const v = String(value).trim(); if (v && !queries.includes(v)) queries.push(v); };
+  for (const term of [...TERMS].sort((a, b) => b.length - a.length)) if (text.includes(term)) add(term);
+  for (const match of text.matchAll(/[^\s]+\.(?:pdf|docx?|xlsx?|dwg|dwf)/gi)) add(match[0].replace(/\.[^.]+$/, ''));
+  add(text.slice(0, 16));
+  return queries.slice(0, 3);
+}
+
+async function searchFiles(env, kbId, query, limit = 8) {
+  const data = await imaCall(env, 'search_knowledge', { knowledge_base_id: kbId, query, cursor: '', limit });
+  return (data.info_list || [])
+    .filter(i => Number(i.media_type) !== 99 && i.media_id)
+    .map(i => ({ media_id: i.media_id, title: i.title || i.name || '', path: i.path || i.title || i.name || '', media_type: Number(i.media_type) }));
+}
+
+const SYSTEM_PROMPT = [
+  '你是子城联合工程部的工程资料助手。',
+  '你只能依据下面提供的“命中文件清单”作答，禁止编造文件内容或不存在的文件。',
+  '回答要求：先一句话结论，再列出最相关的 1-3 份文件（写全文件名），最后说明还需要核对什么。',
+  '如果清单里没有相关文件，直接说没有找到，并建议换个关键词。',
+  '全部用简体中文，控制在一百五十字以内。',
+].join('\n');
+
+async function answerWithModel(env, question, files, history) {
+  const apiKey = env.DEEPSEEK_API_KEY;
+  if (!apiKey) throw new Error('未配置 DEEPSEEK_API_KEY');
+  const base = (env.DEEPSEEK_BASE || 'https://api.deepseek.com').replace(/\/+$/, '');
+  const model = env.DEEPSEEK_MODEL || 'deepseek-chat';
+
+  const listing = files.length
+    ? files.map((f, i) => `${i + 1}. ${f.title}（路径：${f.path}）`).join('\n')
+    : '（无命中文件）';
+
+  const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+  for (const turn of (history || []).slice(-3)) {
+    if (turn && turn.question) messages.push({ role: 'user', content: String(turn.question).slice(0, 300) });
+    if (turn && turn.answer) messages.push({ role: 'assistant', content: String(turn.answer).slice(0, 300) });
+  }
+  messages.push({ role: 'user', content: `问题：${question}\n\n命中文件清单：\n${listing}` });
+
+  const response = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: 900, stream: false }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    const error = new Error(`模型返回 ${response.status}：${payload?.error?.message || ''}`.slice(0, 160));
+    error.upstream = true;
+    throw error;
+  }
+  return { text: payload?.choices?.[0]?.message?.content || '', model };
+}
+
 export default async function onRequest(context) {
   const { request, env } = context;
   // 默认不校验。需要重新加锁时，在 EdgeOne 环境变量里设置 REQUIRE_AUTH=1 即可，无需改代码。
@@ -231,9 +298,44 @@ export default async function onRequest(context) {
       });
     }
 
+    if (route === '/api/ask') {
+      if (request.method !== 'POST') return json({ ok: false, message: '请使用 POST 请求' }, 405);
+      const body = await request.json().catch(() => ({}));
+      const question = String(body.question || '').trim().slice(0, 2000);
+      if (!question) return json({ ok: false, message: '问题不能为空' }, 400);
+
+      const { kbId } = await findKnowledgeBase(env);
+      const collected = new Map();
+      for (const query of planQueries(question)) {
+        if (collected.size >= 8) break;
+        for (const hit of await searchFiles(env, kbId, query, 8)) {
+          if (!collected.has(hit.media_id)) collected.set(hit.media_id, hit);
+        }
+      }
+      const hits = [...collected.values()].slice(0, 8);
+      const { text, model } = await answerWithModel(env, question, hits, body.history);
+
+      const sources = hits.slice(0, 3).map(file => ({
+        doc: {
+          id: file.media_id,
+          name: file.title,
+          path: file.path,
+          type: extension(file.title),
+          category: category(file.path),
+          project: '',
+          source: 'ima',
+          size: null,
+        },
+        chunk: { location: 'ima 检索命中', text: '' },
+      }));
+
+      return json({ ok: true, text, sources, model: { provider: 'DeepSeek', connected: true, name: model }, files: hits.length });
+    }
+
     return json({ ok: false, message: '接口不存在' }, 404);
   } catch (error) {
     const message = error && error.upstream ? String(error.message) : '服务暂时不可用，请稍后重试';
-    return json({ ok: false, message }, 502);
+    const detail = env.DEBUG === '1' && error ? String(error.stack || error.message).slice(0, 400) : undefined;
+    return json({ ok: false, message, detail }, 502);
   }
 }
