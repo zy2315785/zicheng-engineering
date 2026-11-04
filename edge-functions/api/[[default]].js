@@ -292,19 +292,38 @@ async function loadIndex(env, project) {
   return data;
 }
 
+// 中文没有空格，用 2-3 字滑窗切 n-gram，再剔除含虚词的片段。
+const STOP_CHARS = new Set(['的', '了', '是', '在', '有', '和', '与', '吗', '呢', '什', '么', '怎', '哪', '谁', '多', '少', '几', '请', '帮', '我', '查', '看', '下', '这', '那', '个', '把', '被', '给', '对', '从', '到', '为', '会', '能', '要', '想', '吗', '啊', '呀', '吧']);
+
+function chineseTerms(question, max = 24) {
+  const text = String(question).replace(/[^\u4e00-\u9fa5A-Za-z0-9]+/g, ' ');
+  const grams = new Set();
+  for (const run of text.split(/\s+/)) {
+    if (!run) continue;
+    for (let size = 3; size >= 2; size -= 1) {
+      for (let i = 0; i + size <= run.length; i += 1) {
+        const piece = run.slice(i, i + size);
+        if (size === 2 && /^[0-9A-Za-z]+$/.test(piece)) continue;
+        if ([...piece].some(ch => STOP_CHARS.has(ch))) continue;
+        grams.add(piece);
+      }
+    }
+  }
+  return [...grams].slice(0, max);
+}
+
 // 关键词打分：命中次数 × 词长权重，文件名命中额外加权。
 function scoreIndex(index, question) {
-  const terms = planQueries(question).concat(
-    String(question).match(/[\u4e00-\u9fa5]{2,6}|[A-Za-z0-9]{2,}/g) || []
-  );
-  const unique = [...new Set(terms)].filter(t => t.length >= 2).slice(0, 12);
+  const terms = [...new Set(planQueries(question).concat(chineseTerms(question)))]
+    .filter(t => t.length >= 2)
+    .slice(0, 32);
   const hits = [];
   for (const doc of index.docs || []) {
-    const nameHit = unique.reduce((s, t) => s + (doc.name.includes(t) ? 3 : 0), 0);
+    const nameHit = terms.reduce((s, t) => s + (doc.name.includes(t) ? 4 : 0), 0);
     for (const chunk of doc.chunks || []) {
       const text = chunk.text || '';
       let score = nameHit;
-      for (const term of unique) {
+      for (const term of terms) {
         let from = 0;
         let count = 0;
         while (count < 5) {
@@ -313,7 +332,7 @@ function scoreIndex(index, question) {
           count += 1;
           from = at + term.length;
         }
-        if (count) score += count * (term.length >= 4 ? 3 : 2);
+        if (count) score += count * (term.length >= 4 ? 4 : term.length === 3 ? 3 : 2);
       }
       if (score > 0) hits.push({ doc, chunk, score });
     }
