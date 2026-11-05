@@ -450,7 +450,18 @@ export default async function onRequest(context) {
         }));
       }
 
-      const { text, model } = await answerWithModel(env, question, items, body.history);
+      let text = '';
+      let model = '';
+      let modelError = '';
+      try {
+        const answer = await answerWithModel(env, question, items, body.history);
+        text = answer.text;
+        model = answer.model;
+      } catch (error) {
+        modelError = String((error && error.message) || error).slice(0, 200);
+        const names = items.slice(0, 5).map((it, i) => `${i + 1}. ${it.name}`).join('\n');
+        text = `大模型暂时不可用（${modelError}）。\n\n已从资料中检索到 ${items.length} 项相关内容：\n${names || '（无）'}\n\n请先按上述文件人工核对；管理员修复模型密钥后即可正常作答。`;
+      }
 
       const sources = items.slice(0, 3).map(item => ({
         doc: {
