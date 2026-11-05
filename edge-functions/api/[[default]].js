@@ -238,6 +238,34 @@ const SYSTEM_PROMPT = [
   '全部用简体中文，控制在两百字以内。',
 ].join('\n');
 
+// 结果不足时，让模型把问题换个说法，再检索一轮
+async function expandQueriesWithModel(env, question) {
+  const apiKey = env.DEEPSEEK_API_KEY;
+  if (!apiKey) return [];
+  const base = (env.DEEPSEEK_BASE || 'https://api.deepseek.com').replace(/\/+$/, '');
+  const model = env.DEEPSEEK_MODEL || 'deepseek-chat';
+  const resp = await fetch(base + '/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      max_tokens: 120,
+      messages: [
+        { role: 'system', content: '你是工程资料检索助手。把用户的问题改写成 3 条不同的检索式，覆盖同义说法和行业习惯叫法。每行一条，不要编号，不要解释。' },
+        { role: 'user', content: String(question).slice(0, 300) },
+      ],
+    }),
+  });
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  const text = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+  return text.split('\n')
+    .map(line => line.replace(/^[\s\d.、)）-]+/, '').trim())
+    .filter(line => line.length >= 2 && line.length <= 40)
+    .slice(0, 3);
+}
+
 async function answerWithModel(env, question, items, history) {
   const apiKey = env.DEEPSEEK_API_KEY;
   if (!apiKey) throw new Error('未配置 DEEPSEEK_API_KEY');
@@ -312,11 +340,39 @@ function chineseTerms(question, max = 24) {
   return [...grams].slice(0, max);
 }
 
+// 工程资料里的同义说法：用户问“开工日期”，文件里写“合同工期”，纯字面匹配会漏。
+const SYNONYM_GROUPS = [
+  ['开工日期', '开工', '动工', '合同工期', '开工报告', '开工令', '施工许可'],
+  ['竣工日期', '竣工', '完工', '交工', '验收'],
+  ['建设单位', '发包人', '甲方', '业主', '开发单位'],
+  ['施工单位', '承包人', '乙方', '总承包', '总承包单位', '承建', '中标单位'],
+  ['监理单位', '监理', '总监', '总监理工程师'],
+  ['设计单位', '设计人', '设计院', '设计负责人'],
+  ['造价', '合同价', '合同造价', '中标价', '合同金额', '签约合同价', '合同价格'],
+  ['面积', '建筑面积', '总建筑面积', '计容面积', '用地面积'],
+  ['许可', '许可证', '审批', '批文', '备案'],
+  ['质保', '保修', '缺陷责任', '质量保证'],
+  ['违约', '罚款', '赔偿', '违约金'],
+  ['付款', '支付', '进度款', '预付款', '结算'],
+];
+
+function expandTerms(question) {
+  const extra = [];
+  for (const group of SYNONYM_GROUPS) {
+    if (group.some(t => question.includes(t))) extra.push(...group);
+  }
+  return extra;
+}
+
 // 关键词打分：命中次数 × 词长权重，文件名命中额外加权。
 function scoreIndex(index, question) {
-  const terms = [...new Set(planQueries(question).concat(chineseTerms(question)))]
+  const terms = [...new Set(
+    planQueries(question)
+      .concat(chineseTerms(question))
+      .concat(expandTerms(question))
+  )]
     .filter(t => t.length >= 2)
-    .slice(0, 32);
+    .slice(0, 48);
   const hits = [];
   for (const doc of index.docs || []) {
     const nameHit = terms.reduce((s, t) => s + (doc.name.includes(t) ? 4 : 0), 0);
@@ -439,11 +495,13 @@ export default async function onRequest(context) {
       const indexProject = PROJECT_KEYS.includes(project) ? project : PROJECT_KEYS[0];
       let items = [];
       let mode = 'ima';
+      let indexForRetry = null;
 
       // 优先用 Blob 里的正文索引；不可用或没命中时才回退 ima 文件检索
       try {
         const index = await loadIndex(env, indexProject);
         if (index && Array.isArray(index.docs)) {
+          indexForRetry = index;
           const scored = scoreIndex(index, question);
           if (scored.length) {
             mode = 'index';
@@ -457,6 +515,25 @@ export default async function onRequest(context) {
           }
         }
       } catch (error) { /* Blob 未配置或不可用，走 ima 回退 */ }
+
+      // 第二轮：命中太少时换说法再检索（多轮检索）
+      if (indexForRetry && items.length < 4) {
+        try {
+          const extraQueries = await expandQueriesWithModel(env, question);
+          const seen = new Set(items.map(it => (it.doc.mediaId || it.doc.name) + '|' + (it.chunk?.loc || '')));
+          for (const query of extraQueries) {
+            for (const hit of scoreIndex(indexForRetry, query)) {
+              const key = (hit.doc.mediaId || hit.doc.name) + '|' + (hit.chunk.loc || '');
+              if (seen.has(key)) continue;
+              seen.add(key);
+              items.push({ name: hit.doc.name, path: hit.doc.path || hit.doc.name, text: hit.chunk.text || '', doc: hit.doc, chunk: hit.chunk });
+              if (items.length >= 8) break;
+            }
+            if (items.length >= 8) break;
+          }
+          if (items.length) mode = 'index';
+        } catch (error) { /* 扩展检索失败不影响主流程 */ }
+      }
 
       if (!items.length) {
         const { kbId } = await findKnowledgeBase(env);
