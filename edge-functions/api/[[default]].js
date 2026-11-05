@@ -378,6 +378,7 @@ export default async function onRequest(context) {
 
     if (route === '/api/health') {
       const report = {
+        build: 'health-v2-20261105',
         hasKey: Boolean(env.DEEPSEEK_API_KEY),
         keyLen: String(env.DEEPSEEK_API_KEY || '').length,
         hasSpace: /\s/.test(String(env.DEEPSEEK_API_KEY || '')),
