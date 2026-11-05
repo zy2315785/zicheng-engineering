@@ -376,6 +376,33 @@ export default async function onRequest(context) {
       });
     }
 
+    if (route === '/api/health') {
+      const report = {
+        hasKey: Boolean(env.DEEPSEEK_API_KEY),
+        keyLen: String(env.DEEPSEEK_API_KEY || '').length,
+        hasSpace: /\s/.test(String(env.DEEPSEEK_API_KEY || '')),
+        base: env.DEEPSEEK_BASE || '(默认)',
+        modelEnv: env.DEEPSEEK_MODEL || '(默认)',
+        hasBlobToken: Boolean(env.BLOB_TOKEN),
+        blob: null,
+        ima: null,
+        modelCall: null,
+      };
+      try {
+        const idx = await loadIndex(env, 'ruibang');
+        report.blob = idx ? `ok docs=${idx.docs.length}` : 'null';
+      } catch (error) { report.blob = 'ERR ' + String((error && error.message) || error).slice(0, 180); }
+      try {
+        const { kbId } = await findKnowledgeBase(env);
+        report.ima = 'ok ' + kbId;
+      } catch (error) { report.ima = 'ERR ' + String((error && error.message) || error).slice(0, 180); }
+      try {
+        const r = await answerWithModel(env, '测试', [], []);
+        report.modelCall = 'ok ' + String(r.text || '').slice(0, 20);
+      } catch (error) { report.modelCall = 'ERR ' + String((error && error.message) || error).slice(0, 220); }
+      return json({ ok: true, report });
+    }
+
     if (route === '/api/ask') {
       if (request.method !== 'POST') return json({ ok: false, message: '请使用 POST 请求' }, 405);
       const body = await request.json().catch(() => ({}));
