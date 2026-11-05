@@ -230,12 +230,14 @@ async function searchFiles(env, kbId, query, limit = 8) {
 }
 
 const SYSTEM_PROMPT = [
-  '你是子城联合工程部的工程资料助手。',
-  '下面会给你从项目资料里检索到的原文摘录（可能来自扫描件的逐页转写）。',
-  '请严格依据这些摘录回答，禁止编造摘录里没有的内容、日期、金额或条款。',
-  '回答结构：先用一句话给出结论；再逐条列出依据，每条注明出自哪份文件（写全文件名）；最后如果信息不完整，明确指出还缺什么。',
-  '摘录里若有「看不清」或「[?]」标记，说明原件该处不清，需如实说明。',
-  '全部用简体中文，控制在两百字以内。',
+  '你是子城联合工程部的工程资料助手，依据检索到的原文摘录回答同事的问题。',
+  '规则：',
+  '1. 只依据摘录作答，禁止编造摘录中没有的日期、金额、条款或人名。',
+  '2. 每个结论后面用方括号标注依据编号，例如 [1]、[2]，编号对应摘录序号；引用时必须写出文件全名。',
+  '3. 如果多份摘录的数字或说法互相矛盾，不要挑一个，要明确指出“A 文件写 X，B 文件写 Y”，并说明差异。',
+  '4. 结构固定为三段：结论（一两句）→ 依据（逐条，带 [n] 与文件名）→ 尚缺（需要补充什么材料才能确认）。',
+  '5. 摘录里出现「看不清」「[?]」「未逐页收录」时，如实说明该处原件不清或未收录，不要补全。',
+  '6. 全部用简体中文，正文控制在四百字以内。',
 ].join('\n');
 
 // 结果不足时，让模型把问题换个说法，再检索一轮
@@ -275,7 +277,6 @@ async function answerWithModel(env, question, items, history) {
   const context = items.length
     ? items.map((it, i) => `【摘录${i + 1}】${it.name}${it.path && it.path !== it.name ? '（' + it.path + '）' : ''}\n${String(it.text || '').slice(0, 900)}`).join('\n\n')
     : '（没有检索到相关原文摘录）';
-
   const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
   for (const turn of (history || []).slice(-3)) {
     if (turn && turn.question) messages.push({ role: 'user', content: String(turn.question).slice(0, 300) });
@@ -566,7 +567,7 @@ export default async function onRequest(context) {
         text = `大模型暂时不可用（${modelError}）。\n\n已从资料中检索到 ${items.length} 项相关内容：\n${names || '（无）'}\n\n请先按上述文件人工核对；管理员修复模型密钥后即可正常作答。`;
       }
 
-      const sources = items.slice(0, 3).map(item => ({
+      const sources = items.slice(0, 8).map(item => ({
         doc: {
           id: item.doc.mediaId || item.doc.id,
           name: item.name,
