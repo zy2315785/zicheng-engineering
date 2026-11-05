@@ -7,9 +7,9 @@ export async function refreshCloudStatus(){
  return status;
 }
 export function cloudBadge(project){
- if(!status)return '本地资料检索 · 后台未连接';
+ if(!status)return '项目资料检索';
  const linked=status.ima?.projects?.some(p=>p.id===project);
- return (linked?'ima 已连接':status.ima?.configured?'ima 待验证':'ima 未配置')+' · '+(status.model?.installed?'深度思考 · 高':'模型未配置')+' · '+(status.baidu?.connected?'百度网盘已授权':'百度网盘待授权');
+ return (linked?'ima 已连接':status.ima?.configured?'ima 待验证':'ima 未配置')+' · '+(status.model?.installed?'深度思考 · 高':'模型未配置');
 }
 async function post(url,body={}){
  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});

@@ -334,11 +334,26 @@ function scoreIndex(index, question) {
         }
         if (count) score += count * (term.length >= 4 ? 4 : term.length === 3 ? 3 : 2);
       }
-      if (score > 0) hits.push({ doc, chunk, score });
+      if (score > 0) {
+        // 长度归一化：500 字的许可证命中一次，比 40 万字的合同命中三次更说明问题
+        const norm = score / Math.sqrt(1 + text.length / 800);
+        hits.push({ doc, chunk, score: norm });
+      }
     }
   }
   hits.sort((a, b) => b.score - a.score);
-  return hits.slice(0, 6);
+  // 同一份文档最多贡献 2 个片段，避免超大文档（如几十万字的 Excel）挤掉其他文件
+  const seen = new Map();
+  const picked = [];
+  for (const hit of hits) {
+    const key = hit.doc.mediaId || hit.doc.name;
+    const used = seen.get(key) || 0;
+    if (used >= 2) continue;
+    seen.set(key, used + 1);
+    picked.push(hit);
+    if (picked.length >= 8) break;
+  }
+  return picked;
 }
 
 export default async function onRequest(context) {
@@ -373,6 +388,16 @@ export default async function onRequest(context) {
       return new Response(null, {
         status: 302,
         headers: { Location: location, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' },
+      });
+    }
+
+    if (route === '/api/cloud/status') {
+      let imaOk = false;
+      try { await findKnowledgeBase(env); imaOk = true; } catch { imaOk = false; }
+      return json({
+        ima: { configured: Boolean(env.IMA_CLIENT_ID), ready: imaOk, projects: [{ id: 'ruibang' }, { id: 'huoju' }] },
+        model: { installed: Boolean(env.DEEPSEEK_API_KEY) },
+        baidu: { connected: false },
       });
     }
 
