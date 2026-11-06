@@ -9,6 +9,7 @@
 //   4. media_id 做格式白名单校验，避免被当成任意转发器。
 
 import { getStore } from '../_lib/pages-blob.js';
+import { agentAssistantMessage } from '../_lib/agent-utils.mjs';
 
 const IMA_BASE = 'https://ima.qq.com/openapi/wiki/v1/';
 const BLOB_STORE = 'zc-index';
@@ -364,7 +365,7 @@ async function answerWithModel(env, question, items, history) {
   const response = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: 900, stream: false }),
+    body: JSON.stringify({ model, messages, ...thinkingParams(env), stream: false }),
   });
   const payload = await response.json();
   if (!response.ok) {
@@ -503,7 +504,7 @@ async function runAgent(env, index, question, history, seedItems) {
       if (!text) throw new Error('模型没有返回答案');
       return { text, model, rounds: step, docs: seen };
     }
-    messages.push({ role: 'assistant', content: message.content || '', tool_calls: calls });
+    messages.push(agentAssistantMessage(message));
     for (const call of calls.slice(0, 3)) {
       let output = '';
       try { output = await agentRunTool(env, index, call.function?.name, call.function?.arguments, seen); } catch (error) { output = '工具执行失败：' + String((error && error.message) || error).slice(0, 120); }
@@ -856,9 +857,12 @@ export default async function onRequest(context) {
       let modelError = '';
       let agentRounds = 0;
       let agentUsed = false;
+      let agentAttempted = false;
+      let agentFallback = null;
       try {
         // 先走 agent：模型可多轮调工具查阅；失败或超时自动退回单轮，保证一定能答
-        if (indexForRetry && items.length >= 2) {
+        if (indexForRetry && (indexForRetry.docs || []).some(doc => (doc.chunks || []).length > 0)) {
+          agentAttempted = true;
           try {
             const agent = await runAgent(env, indexForRetry, question, body.history, items);
             text = agent.text;
@@ -874,7 +878,10 @@ export default async function onRequest(context) {
                 chunk: (doc.chunks || [])[0] || null,
               }));
             }
-          } catch (error) { /* 退回单轮作答 */ }
+          } catch (error) {
+            // Keep the cause observable without leaking upstream response content or credentials.
+            agentFallback = error?.upstream ? 'MODEL_API_ERROR' : 'AGENT_EXECUTION_FAILED';
+          }
         }
         if (!text) {
           const answer = await answerWithModel(env, question, items, body.history);
@@ -882,7 +889,7 @@ export default async function onRequest(context) {
           model = answer.model;
         }
       } catch (error) {
-        modelError = String((error && error.message) || error).slice(0, 200);
+        modelError = '模型请求失败，请检查服务端运行日志。';
         const names = items.slice(0, 5).map((it, i) => `${i + 1}. ${it.name}`).join('\n');
         text = `大模型暂时不可用（${modelError}）。\n\n已从资料中检索到 ${items.length} 项相关内容：\n${names || '（无）'}\n\n请先按上述文件人工核对；管理员修复模型密钥后即可正常作答。`;
       }
@@ -908,7 +915,7 @@ export default async function onRequest(context) {
         chunk: { location: item.chunk?.loc || (item.text ? '正文摘录' : 'ima 检索命中'), text: (item.text || '').slice(0, 200) },
       }));
 
-      return json({ ok: true, text, sources, mode: agentUsed ? 'agent' : mode, rounds: agentRounds, model: { provider: 'DeepSeek', connected: true, name: model }, files: items.length });
+      return json({ ok: true, text, sources, mode: agentUsed ? 'agent' : mode, rounds: agentRounds, agent: { attempted: agentAttempted, used: agentUsed, fallback: agentFallback }, model: { provider: 'DeepSeek', connected: Boolean(model), name: model || null }, files: items.length });
     }
 
     return json({ ok: false, message: '接口不存在' }, 404);
