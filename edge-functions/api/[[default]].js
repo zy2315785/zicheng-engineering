@@ -345,7 +345,7 @@ function agentFindDoc(index, name) {
     || null;
 }
 
-function agentRunTool(index, name, rawArgs, seen) {
+async function agentRunTool(env, index, name, rawArgs, seen) {
   let args = {};
   try { args = JSON.parse(rawArgs || '{}') || {}; } catch { args = {}; }
   if (name === 'search_docs') {
@@ -358,17 +358,24 @@ function agentRunTool(index, name, rawArgs, seen) {
     const doc = agentFindDoc(index, args.name);
     if (!doc) return `未找到「${args.name}」。请先用 search_docs 确认准确文件名。`;
     if (!seen.some(d => d.name === doc.name)) seen.push(doc);
-    const full = (doc.chunks || []).map(c => c.text).join('\n');
+    let full = (doc.chunks || []).map(c => c.text).join('\n');
+
+    // 不在边缘函数里现读原件：实测中文 PDF 多为扫描图或 CID 字体，
+    // 需要逐页解压 + ToUnicode 映射才能还原文字，CPU 与包体都超出边缘函数限制。
+    const source = '';
+    if (!full.trim()) {
+      return `《${doc.name}》尚未收录可检索正文，原件也无法在线解析（可能是扫描件）。可提示用户用「下载原件」查看。`;
+    }
     if (args.keyword) {
       const keyword = String(args.keyword);
       const at = full.indexOf(keyword);
       if (at < 0) return `《${doc.name}》中没有出现「${keyword}」。全文开头如下：\n${full.slice(0, 1500)}`;
-      return `《${doc.name}》中「${keyword}」附近：\n${full.slice(Math.max(0, at - 300), at + 900)}`;
+      return `《${doc.name}》${source}中「${keyword}」附近：\n${full.slice(Math.max(0, at - 300), at + 900)}`;
     }
     const offset = Math.max(0, Number(args.offset) || 0);
     const piece = full.slice(offset, offset + 2500);
     const more = offset + 2500 < full.length ? `\n（未读完，可继续用 offset=${offset + 2500}）` : '';
-    return `《${doc.name}》第 ${offset} 字起：\n${piece}${more}`;
+    return `《${doc.name}》${source}第 ${offset} 字起：\n${piece}${more}`;
   }
   return '未知工具。';
 }
@@ -390,9 +397,11 @@ async function runAgent(env, index, question, history, seedItems) {
   messages.push({ role: 'user', content: `问题：${question}\n\n<首轮检索>\n${seed}\n</首轮检索>` });
 
   const seen = [];
-  const maxSteps = 3;
+  const maxSteps = 6;
+  const startedAt = Date.now();
   for (let step = 0; step <= maxSteps; step++) {
-    const final = step === maxSteps;
+    // 超过 20 秒强制收敛，避免 6 轮把边缘函数拖到超时
+    const final = step === maxSteps || Date.now() - startedAt > 20000;
     if (final) messages.push({ role: 'user', content: '已达到查阅轮数。请依据现有证据完成回答，并说明尚未查清的部分，不再调用工具。' });
     const response = await fetch(`${base}/chat/completions`, {
       method: 'POST',
@@ -415,11 +424,91 @@ async function runAgent(env, index, question, history, seedItems) {
     messages.push({ role: 'assistant', content: message.content || '', tool_calls: calls });
     for (const call of calls.slice(0, 3)) {
       let output = '';
-      try { output = agentRunTool(index, call.function?.name, call.function?.arguments, seen); } catch (error) { output = '工具执行失败：' + String((error && error.message) || error).slice(0, 120); }
+      try { output = await agentRunTool(env, index, call.function?.name, call.function?.arguments, seen); } catch (error) { output = '工具执行失败：' + String((error && error.message) || error).slice(0, 120); }
       messages.push({ role: 'tool', tool_call_id: call.id, content: String(output).slice(0, 4000) });
     }
   }
   throw new Error('查阅轮数超限');
+}
+
+// ── 云端读原件：ima 签名地址下载 + PDF 文本层抽取 ──
+async function fetchImaOriginal(env, mediaId) {
+  if (!mediaId) return null;
+  const info = await imaCall(env, 'get_media_info', { media_id: mediaId });
+  const target = info && info.url_info && info.url_info.url;
+  if (!target) return null;
+  const response = await fetch(target);
+  if (!response.ok) return null;
+  const buffer = await response.arrayBuffer();
+  if (buffer.byteLength > 12 * 1024 * 1024) return null; // 超过 12MB 不解析，避免拖垮边缘函数
+  return new Uint8Array(buffer);
+}
+
+async function inflateBytes(bytes) {
+  for (const format of ['deflate', 'deflate-raw']) {
+    try {
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    } catch (error) { /* 试下一种 */ }
+  }
+  return null;
+}
+
+const PDF_ESCAPES = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', '(': '(', ')': ')', '\\': '\\' };
+
+function decodePdfString(raw) {
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch !== '\\') { out += ch; continue; }
+    const next = raw[i + 1];
+    i++;
+    if (PDF_ESCAPES[next] !== undefined) { out += PDF_ESCAPES[next]; continue; }
+    if (/[0-7]/.test(next || '')) {
+      let oct = next;
+      while (oct.length < 3 && /[0-7]/.test(raw[i + 1] || '')) { oct += raw[++i]; }
+      out += String.fromCharCode(parseInt(oct, 8));
+      continue;
+    }
+  }
+  return out;
+}
+
+function extractPdfText(raw) {
+  const pieces = [];
+  const re = /\((?:\\.|[^\\()])*\)\s*Tj|\[(?:[^\]]|\\.)*\]\s*TJ|T\*|\bET\b/g;
+  let match;
+  while ((match = re.exec(raw)) !== null) {
+    const token = match[0];
+    if (token === 'T*' || token === 'ET') { pieces.push('\n'); continue; }
+    const inner = token.slice(0, token.lastIndexOf(']') >= 0 ? token.lastIndexOf(']') + 1 : token.lastIndexOf(')') + 1);
+    const strings = inner.match(/\((?:\\.|[^\\()])*\)/g) || [];
+    for (const item of strings) pieces.push(decodePdfString(item.slice(1, -1)));
+    if (!strings.length && inner !== token) pieces.push(' ');
+  }
+  return pieces.join('').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').trim();
+}
+
+async function pdfTextLayer(bytes) {
+  const latin = new TextDecoder('latin1').decode(bytes);
+  const chunks = [];
+  const re = /stream\r?\n?([\s\S]*?)endstream/g;
+  let match;
+  let count = 0;
+  while ((match = re.exec(latin)) !== null && count < 260) {
+    count++;
+    // 起点 = 匹配处 + "stream\r\n" 的长度；必须再减掉结尾 "endstream" 的 9 个字符
+    const start = match.index + (match[0].length - match[1].length - 'endstream'.length);
+    let length = match[1].length;
+    // endstream 前常有 \r\n，留着会让解压器报“尾部有多余字节”
+    while (length > 0 && (bytes[start + length - 1] === 0x0d || bytes[start + length - 1] === 0x0a || bytes[start + length - 1] === 0x20)) length--;
+    const raw = bytes.subarray(start, start + length);
+    let decoded = null;
+    if (raw.length > 2) decoded = await inflateBytes(raw);
+    const text = decoded ? extractPdfText(new TextDecoder('latin1').decode(decoded)) : extractPdfText(match[1]);
+    if (text && text.length > 20) chunks.push(text);
+  }
+  return chunks.join('\n').slice(0, 20000);
 }
 
 // 从 Blob 读取某个项目的正文索引，边缘缓存 10 分钟避免反复拉 1-2MB。
