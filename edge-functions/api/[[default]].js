@@ -10,6 +10,7 @@
 
 import { getStore } from '../_lib/pages-blob.js';
 import { agentAssistantMessage } from '../_lib/agent-utils.mjs';
+import { rankChunksBM25 } from '../_lib/bm25.mjs';
 
 const IMA_BASE = 'https://ima.qq.com/openapi/wiki/v1/';
 const BLOB_STORE = 'zc-index';
@@ -664,51 +665,11 @@ function expandTerms(question) {
 
 // 关键词打分：命中次数 × 词长权重，文件名命中额外加权。
 function scoreIndex(index, question) {
-  const terms = [...new Set(
-    planQueries(question)
-      .concat(chineseTerms(question))
-      .concat(expandTerms(question))
-  )]
-    .filter(t => t.length >= 2)
-    .slice(0, 48);
-  const hits = [];
-  for (const doc of index.docs || []) {
-    // 文件名命中要重奖：问“施工进度”时，《总进度计划》比正文里偶然出现“进度”的合同更该排在前面
-    const nameHit = terms.reduce((s, t) => s + (doc.name.includes(t) ? 10 : 0), 0);
-    for (const chunk of doc.chunks || []) {
-      const text = chunk.text || '';
-      let score = nameHit;
-      for (const term of terms) {
-        let from = 0;
-        let count = 0;
-        while (count < 5) {
-          const at = text.indexOf(term, from);
-          if (at === -1) break;
-          count += 1;
-          from = at + term.length;
-        }
-        if (count) score += count * (term.length >= 4 ? 4 : term.length === 3 ? 3 : 2);
-      }
-      if (score > 0) {
-        // 长度归一化：抑制超长文档霸榜，但要封顶，否则大表格（进度计划、台账）会被误杀
-        const norm = score / Math.min(3, Math.sqrt(1 + text.length / 3000));
-        hits.push({ doc, chunk, score: norm });
-      }
-    }
-  }
-  hits.sort((a, b) => b.score - a.score);
-  // 同一份文档最多贡献 2 个片段，避免超大文档（如几十万字的 Excel）挤掉其他文件
-  const seen = new Map();
-  const picked = [];
-  for (const hit of hits) {
-    const key = hit.doc.mediaId || hit.doc.name;
-    const used = seen.get(key) || 0;
-    if (used >= 2) continue;
-    seen.set(key, used + 1);
-    picked.push(hit);
-    if (picked.length >= 8) break;
-  }
-  return picked;
+  // Hybrid lexical signals: direct Chinese n-grams + domain synonyms.
+  // BM25 operates on already-extracted text; it does not require embeddings.
+  const direct = planQueries(question).concat(chineseTerms(question));
+  const synonyms = expandTerms(question);
+  return rankChunksBM25(index, direct, synonyms, 8);
 }
 
 export default async function onRequest(context) {
