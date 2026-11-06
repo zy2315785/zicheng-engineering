@@ -268,6 +268,54 @@ async function expandQueriesWithModel(env, question) {
     .slice(0, 3);
 }
 
+function thinkingParams(env) {
+  const on = String(env.DEEPSEEK_THINKING || 'on').toLowerCase() !== 'off';
+  const maxTokens = Number(env.DEEPSEEK_MAX_TOKENS || 4096);
+  if (!on) return { temperature: 0.2, max_tokens: maxTokens };
+  return { thinking: { type: 'enabled' }, reasoning_effort: env.DEEPSEEK_EFFORT || 'high', max_tokens: maxTokens };
+}
+
+// ── 引用绑定：模型自己编的 [n] 与我们的来源顺序往往不一致，按文名纠偏再裁剪 ──
+function reconcileCitations(text, items) {
+  if (!items.length) return String(text || '');
+  const clean = (name) => String(name || '').replace(/\.[^.]+$/, '').trim();
+  const freq = new Map();
+  for (const it of items) freq.set(clean(it.name), (freq.get(clean(it.name)) || 0) + 1);
+  const names = items
+    .map((it, i) => ({ i, name: clean(it.name) }))
+    .filter(x => x.name.length >= 2 && freq.get(x.name) === 1)
+    .sort((a, b) => b.name.length - a.name.length);
+  if (!names.length) return String(text || '');
+  return String(text).replace(/\[(\d{1,2})\]/g, (whole, num, offset, all) => {
+    const before = all.slice(Math.max(0, offset - 120), offset);
+    let best = null, bestAt = -1;
+    for (const item of names) {
+      const at = before.lastIndexOf(item.name);
+      if (at > bestAt) { bestAt = at; best = item; }
+    }
+    if (!best || bestAt < 0) return whole;
+    const want = best.i + 1;
+    return want === Number(num) ? whole : `[${want}]`;
+  });
+}
+
+function bindCitations(text, items) {
+  let out = reconcileCitations(text, items);
+  out = out.replace(/(\[\d{1,2}\])(?:\s*\1)+/g, '$1');
+  const cited = new Set([...String(out).matchAll(/\[(\d{1,2})\]/g)]
+    .map(m => Number(m[1])).filter(n => n >= 1 && n <= items.length));
+  if (!cited.size) return { text: out, items };
+  const kept = [], map = new Map();
+  items.forEach((it, index) => {
+    if (cited.has(index + 1)) { kept.push(it); map.set(index + 1, kept.length); }
+  });
+  const rewritten = out.replace(/\[(\d{1,2})\]/g, (whole, num) => {
+    const next = map.get(Number(num));
+    return next ? `[${next}]` : whole;
+  });
+  return { text: rewritten, items: kept };
+}
+
 async function answerWithModel(env, question, items, history) {
   const apiKey = env.DEEPSEEK_API_KEY;
   if (!apiKey) throw new Error('未配置 DEEPSEEK_API_KEY');
@@ -396,7 +444,8 @@ async function runAgent(env, index, question, history, seedItems) {
   }
   messages.push({ role: 'user', content: `问题：${question}\n\n<首轮检索>\n${seed}\n</首轮检索>` });
 
-  const seen = [];
+  // 首轮摘录里的文件也要计入来源，否则模型引用它们时无法绑定
+  const seen = seedItems.map(it => it.doc).filter(Boolean);
   const maxSteps = 6;
   const startedAt = Date.now();
   for (let step = 0; step <= maxSteps; step++) {
@@ -406,7 +455,7 @@ async function runAgent(env, index, question, history, seedItems) {
     const response = await fetch(`${base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: 900, stream: false, tools: AGENT_TOOLS, tool_choice: final ? 'none' : 'auto' }),
+      body: JSON.stringify({ model, messages, ...thinkingParams(env), stream: false, tools: AGENT_TOOLS, tool_choice: final ? 'none' : 'auto' }),
     });
     const payload = await response.json();
     if (!response.ok) {
@@ -771,6 +820,7 @@ export default async function onRequest(context) {
       let model = '';
       let modelError = '';
       let agentRounds = 0;
+      let agentUsed = false;
       try {
         // 先走 agent：模型可多轮调工具查阅；失败或超时自动退回单轮，保证一定能答
         if (indexForRetry && items.length >= 2) {
@@ -779,6 +829,7 @@ export default async function onRequest(context) {
             text = agent.text;
             model = agent.model;
             agentRounds = agent.rounds;
+            agentUsed = true;
             if (agent.docs.length) {
               items = agent.docs.slice(0, 6).map(doc => ({
                 name: doc.name,
@@ -801,6 +852,13 @@ export default async function onRequest(context) {
         text = `大模型暂时不可用（${modelError}）。\n\n已从资料中检索到 ${items.length} 项相关内容：\n${names || '（无）'}\n\n请先按上述文件人工核对；管理员修复模型密钥后即可正常作答。`;
       }
 
+      // 引用绑定：按文名纠偏编号，只留下真正被引用的来源
+      if (text) {
+        const bound = bindCitations(text, items);
+        text = bound.text;
+        items = bound.items;
+      }
+
       const sources = items.slice(0, 8).map(item => ({
         doc: {
           id: item.doc.mediaId || item.doc.id,
@@ -815,7 +873,7 @@ export default async function onRequest(context) {
         chunk: { location: item.chunk?.loc || (item.text ? '正文摘录' : 'ima 检索命中'), text: (item.text || '').slice(0, 200) },
       }));
 
-      return json({ ok: true, text, sources, mode: agentRounds ? 'agent' : mode, rounds: agentRounds, model: { provider: 'DeepSeek', connected: true, name: model }, files: items.length });
+      return json({ ok: true, text, sources, mode: agentUsed ? 'agent' : mode, rounds: agentRounds, model: { provider: 'DeepSeek', connected: true, name: model }, files: items.length });
     }
 
     return json({ ok: false, message: '接口不存在' }, 404);
