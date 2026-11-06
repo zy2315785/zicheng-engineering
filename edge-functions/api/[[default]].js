@@ -298,6 +298,130 @@ async function answerWithModel(env, question, items, history) {
   return { text: payload?.choices?.[0]?.message?.content || '', model };
 }
 
+// ── 云端 agent：给模型可调用的工具，允许它多轮查阅后作答 ──
+const AGENT_PROMPT = SYSTEM_PROMPT + '\n\n' +
+  '你有两个工具：search_docs（换关键词检索）和 read_document（打开某份文件看全文或按关键词定位）。\n' +
+  '遇到以下情况必须调用工具再查一次，不要直接下结论：\n' +
+  '- 首轮摘录里没有你要的数字或条款；\n' +
+  '- 多个说法可能对应同一件事（如“开工日期/合同工期”“甲方/发包人”）；\n' +
+  '- 需要核对原件原文，而不是只看摘录片段。\n' +
+  '最多查三轮。查到足够证据就立即作答，不要为了查而查。';
+
+const AGENT_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'search_docs',
+      description: '在当前项目资料中按关键词检索正文。可换多种说法反复调用，例如“开工日期”“合同工期”“开工报告”。',
+      parameters: { type: 'object', properties: { query: { type: 'string', description: '检索关键词，2-10 字效果最好' } }, required: ['query'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_document',
+      description: '打开某份已检索到的文件查看更完整正文。可用 keyword 定位到关键词附近，或用 offset 从指定位置继续读。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '文件名，可只写关键部分' },
+          keyword: { type: 'string', description: '要定位的关键词' },
+          offset: { type: 'integer', description: '从第几个字符开始读，默认从头' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+];
+
+function agentFindDoc(index, name) {
+  const target = String(name || '').trim();
+  if (!target) return null;
+  const docs = index.docs || [];
+  const bare = (s) => String(s || '').replace(/\.[a-z0-9]+$/i, '');
+  return docs.find(d => d.name === target)
+    || docs.find(d => d.name.includes(target))
+    || docs.find(d => bare(d.name).includes(bare(target)))
+    || null;
+}
+
+function agentRunTool(index, name, rawArgs, seen) {
+  let args = {};
+  try { args = JSON.parse(rawArgs || '{}') || {}; } catch { args = {}; }
+  if (name === 'search_docs') {
+    const hits = scoreIndex(index, String(args.query || '')).slice(0, 5);
+    if (!hits.length) return '没有检索到相关内容，换一种说法（同义词、简称、行业叫法）再试。';
+    for (const hit of hits) if (!seen.some(d => d.name === hit.doc.name)) seen.push(hit.doc);
+    return hits.map((hit, i) => `[${i + 1}] ${hit.doc.name}\n${String(hit.chunk.text || '').slice(0, 1200)}`).join('\n\n');
+  }
+  if (name === 'read_document') {
+    const doc = agentFindDoc(index, args.name);
+    if (!doc) return `未找到「${args.name}」。请先用 search_docs 确认准确文件名。`;
+    if (!seen.some(d => d.name === doc.name)) seen.push(doc);
+    const full = (doc.chunks || []).map(c => c.text).join('\n');
+    if (args.keyword) {
+      const keyword = String(args.keyword);
+      const at = full.indexOf(keyword);
+      if (at < 0) return `《${doc.name}》中没有出现「${keyword}」。全文开头如下：\n${full.slice(0, 1500)}`;
+      return `《${doc.name}》中「${keyword}」附近：\n${full.slice(Math.max(0, at - 300), at + 900)}`;
+    }
+    const offset = Math.max(0, Number(args.offset) || 0);
+    const piece = full.slice(offset, offset + 2500);
+    const more = offset + 2500 < full.length ? `\n（未读完，可继续用 offset=${offset + 2500}）` : '';
+    return `《${doc.name}》第 ${offset} 字起：\n${piece}${more}`;
+  }
+  return '未知工具。';
+}
+
+async function runAgent(env, index, question, history, seedItems) {
+  const apiKey = env.DEEPSEEK_API_KEY;
+  if (!apiKey) throw new Error('未配置 DEEPSEEK_API_KEY');
+  const base = (env.DEEPSEEK_BASE || 'https://api.deepseek.com').replace(/\/+$/, '');
+  const model = env.DEEPSEEK_MODEL || 'deepseek-chat';
+  const seed = seedItems.length
+    ? seedItems.slice(0, 5).map((it, i) => `【摘录${i + 1}】${it.name}\n${String(it.text || '').slice(0, 700)}`).join('\n\n')
+    : '（首轮没有检索到结果，请自行用 search_docs 检索）';
+
+  const messages = [{ role: 'system', content: AGENT_PROMPT }];
+  for (const turn of (history || []).slice(-2)) {
+    if (turn && turn.question) messages.push({ role: 'user', content: String(turn.question).slice(0, 200) });
+    if (turn && turn.answer) messages.push({ role: 'assistant', content: String(turn.answer).slice(0, 200) });
+  }
+  messages.push({ role: 'user', content: `问题：${question}\n\n<首轮检索>\n${seed}\n</首轮检索>` });
+
+  const seen = [];
+  const maxSteps = 3;
+  for (let step = 0; step <= maxSteps; step++) {
+    const final = step === maxSteps;
+    if (final) messages.push({ role: 'user', content: '已达到查阅轮数。请依据现有证据完成回答，并说明尚未查清的部分，不再调用工具。' });
+    const response = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: 900, stream: false, tools: AGENT_TOOLS, tool_choice: final ? 'none' : 'auto' }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      const error = new Error(`模型返回 ${response.status}：${payload?.error?.message || ''}`.slice(0, 160));
+      error.upstream = true;
+      throw error;
+    }
+    const message = payload?.choices?.[0]?.message || {};
+    const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    if (!calls.length) {
+      const text = String(message.content || '').trim();
+      if (!text) throw new Error('模型没有返回答案');
+      return { text, model, rounds: step, docs: seen };
+    }
+    messages.push({ role: 'assistant', content: message.content || '', tool_calls: calls });
+    for (const call of calls.slice(0, 3)) {
+      let output = '';
+      try { output = agentRunTool(index, call.function?.name, call.function?.arguments, seen); } catch (error) { output = '工具执行失败：' + String((error && error.message) || error).slice(0, 120); }
+      messages.push({ role: 'tool', tool_call_id: call.id, content: String(output).slice(0, 4000) });
+    }
+  }
+  throw new Error('查阅轮数超限');
+}
+
 // 从 Blob 读取某个项目的正文索引，边缘缓存 10 分钟避免反复拉 1-2MB。
 async function loadIndex(env, project) {
   const key = `${project}.json`;
@@ -557,10 +681,31 @@ export default async function onRequest(context) {
       let text = '';
       let model = '';
       let modelError = '';
+      let agentRounds = 0;
       try {
-        const answer = await answerWithModel(env, question, items, body.history);
-        text = answer.text;
-        model = answer.model;
+        // 先走 agent：模型可多轮调工具查阅；失败或超时自动退回单轮，保证一定能答
+        if (indexForRetry && items.length >= 2) {
+          try {
+            const agent = await runAgent(env, indexForRetry, question, body.history, items);
+            text = agent.text;
+            model = agent.model;
+            agentRounds = agent.rounds;
+            if (agent.docs.length) {
+              items = agent.docs.slice(0, 6).map(doc => ({
+                name: doc.name,
+                path: doc.path || doc.name,
+                text: ((doc.chunks || [])[0] || {}).text || '',
+                doc,
+                chunk: (doc.chunks || [])[0] || null,
+              }));
+            }
+          } catch (error) { /* 退回单轮作答 */ }
+        }
+        if (!text) {
+          const answer = await answerWithModel(env, question, items, body.history);
+          text = answer.text;
+          model = answer.model;
+        }
       } catch (error) {
         modelError = String((error && error.message) || error).slice(0, 200);
         const names = items.slice(0, 5).map((it, i) => `${i + 1}. ${it.name}`).join('\n');
@@ -581,7 +726,7 @@ export default async function onRequest(context) {
         chunk: { location: item.chunk?.loc || (item.text ? '正文摘录' : 'ima 检索命中'), text: (item.text || '').slice(0, 200) },
       }));
 
-      return json({ ok: true, text, sources, mode, model: { provider: 'DeepSeek', connected: true, name: model }, files: items.length });
+      return json({ ok: true, text, sources, mode: agentRounds ? 'agent' : mode, rounds: agentRounds, model: { provider: 'DeepSeek', connected: true, name: model }, files: items.length });
     }
 
     return json({ ok: false, message: '接口不存在' }, 404);
