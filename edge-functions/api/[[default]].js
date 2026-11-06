@@ -340,6 +340,7 @@ function bindCitations(text, items) {
     const next = doc ? indexOf(doc) : 0;
     return next ? `[${next}]` : '';
   });
+  out = out.replace(/【摘录\s*\d{1,2}】/g, '');                 // 内部标记，不该出现在答案里
   out = out.replace(/(\[\d{1,2}\])(?:\s*\1)+/g, '$1').replace(/\s+([。，；])/g, '$1');
   return { text: out, items: order };
 }
@@ -473,7 +474,11 @@ async function runAgent(env, index, question, history, seedItems) {
   messages.push({ role: 'user', content: `问题：${question}\n\n<首轮检索>\n${seed}\n</首轮检索>` });
 
   // 首轮摘录里的文件也要计入来源，否则模型引用它们时无法绑定
-  const seen = seedItems.map(it => it.doc).filter(Boolean);
+  const seen = [];
+  for (const it of seedItems) {
+    const doc = it && it.doc;
+    if (doc && !seen.some(d => d.name === doc.name)) seen.push(doc);
+  }
   const maxSteps = 6;
   const startedAt = Date.now();
   for (let step = 0; step <= maxSteps; step++) {
@@ -645,6 +650,7 @@ const SYNONYM_GROUPS = [
   ['质保', '保修', '缺陷责任', '质量保证'],
   ['违约', '罚款', '赔偿', '违约金'],
   ['付款', '支付', '进度款', '预付款', '结算'],
+  ['进度', '进展', '形象进度', '工期', '计划', '台账', '完成情况', '到什么程度', '多少根', '多少米'],
 ];
 
 function expandTerms(question) {
@@ -666,7 +672,8 @@ function scoreIndex(index, question) {
     .slice(0, 48);
   const hits = [];
   for (const doc of index.docs || []) {
-    const nameHit = terms.reduce((s, t) => s + (doc.name.includes(t) ? 4 : 0), 0);
+    // 文件名命中要重奖：问“施工进度”时，《总进度计划》比正文里偶然出现“进度”的合同更该排在前面
+    const nameHit = terms.reduce((s, t) => s + (doc.name.includes(t) ? 10 : 0), 0);
     for (const chunk of doc.chunks || []) {
       const text = chunk.text || '';
       let score = nameHit;
@@ -682,8 +689,8 @@ function scoreIndex(index, question) {
         if (count) score += count * (term.length >= 4 ? 4 : term.length === 3 ? 3 : 2);
       }
       if (score > 0) {
-        // 长度归一化：500 字的许可证命中一次，比 40 万字的合同命中三次更说明问题
-        const norm = score / Math.sqrt(1 + text.length / 800);
+        // 长度归一化：抑制超长文档霸榜，但要封顶，否则大表格（进度计划、台账）会被误杀
+        const norm = score / Math.min(3, Math.sqrt(1 + text.length / 3000));
         hits.push({ doc, chunk, score: norm });
       }
     }
@@ -859,7 +866,7 @@ export default async function onRequest(context) {
             agentRounds = agent.rounds;
             agentUsed = true;
             if (agent.docs.length) {
-              items = agent.docs.slice(0, 6).map(doc => ({
+              items = agent.docs.slice(0, 12).map(doc => ({   // 不能被截断，否则被引用的文件会掉出来
                 name: doc.name,
                 path: doc.path || doc.name,
                 text: ((doc.chunks || [])[0] || {}).text || '',
