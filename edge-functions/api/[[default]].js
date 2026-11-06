@@ -300,20 +300,48 @@ function reconcileCitations(text, items) {
 }
 
 function bindCitations(text, items) {
+  const clean = (name) => String(name || '').replace(/\.[^.]+$/, '').trim();
   let out = reconcileCitations(text, items);
-  out = out.replace(/(\[\d{1,2}\])(?:\s*\1)+/g, '$1');
-  const cited = new Set([...String(out).matchAll(/\[(\d{1,2})\]/g)]
-    .map(m => Number(m[1])).filter(n => n >= 1 && n <= items.length));
-  if (!cited.size) return { text: out, items };
-  const kept = [], map = new Map();
-  items.forEach((it, index) => {
-    if (cited.has(index + 1)) { kept.push(it); map.set(index + 1, kept.length); }
+
+  // 以「最终来源列表」为准重排：先按正文里文件名首次出现的顺序定序，
+  // 再把每个 [n] 换成它前面最近那个文件名对应的序号，保证正文编号与卡片一一对应。
+  const byName = new Map();
+  for (const it of items) {
+    const key = clean(it.name);
+    if (key && !byName.has(key)) byName.set(key, it);
+  }
+  const order = [];
+  const scan = /《([^》]{2,60})》/g;
+  let hit;
+  while ((hit = scan.exec(out)) !== null) {
+    const name = hit[1].trim();
+    for (const key of byName.keys()) {
+      if (key === name || key.includes(name) || name.includes(key)) {
+        const doc = byName.get(key);
+        if (!order.includes(doc)) order.push(doc);
+        byName.set(name, doc);
+        break;
+      }
+    }
+  }
+  if (!order.length) return { text: out, items };
+
+  const indexOf = (doc) => order.indexOf(doc) + 1;
+  out = out.replace(/\[(\d{1,2})\]/g, (whole, num, offset, all) => {
+    const before = all.slice(Math.max(0, offset - 120), offset);
+    let bestName = '';
+    for (const key of byName.keys()) {
+      const at = before.lastIndexOf(key);
+      if (at < 0) continue;
+      if (bestName === '' || at > before.lastIndexOf(bestName)) bestName = key;
+    }
+    if (!bestName) return '';
+    const doc = byName.get(bestName);
+    const next = doc ? indexOf(doc) : 0;
+    return next ? `[${next}]` : '';
   });
-  const rewritten = out.replace(/\[(\d{1,2})\]/g, (whole, num) => {
-    const next = map.get(Number(num));
-    return next ? `[${next}]` : whole;
-  });
-  return { text: rewritten, items: kept };
+  out = out.replace(/(\[\d{1,2}\])(?:\s*\1)+/g, '$1').replace(/\s+([。，；])/g, '$1');
+  return { text: out, items: order };
 }
 
 async function answerWithModel(env, question, items, history) {
