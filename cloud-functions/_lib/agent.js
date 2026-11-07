@@ -63,7 +63,7 @@ async function liveSearch(env,s,query) {
  return out;
 }
 export async function searchTool(env,s,query) {
- const index=await indexFor(env,s.project).catch(()=>({docs:[]}));
+ let index;try{index=await indexFor(env,s.project);}catch{index={docs:[]};trace(s,'文字缓存暂不可用','未能读取私有索引；继续访问 ima，零缓存命中不代表云端没有资料。');}
  let cloud=[];
  try{cloud=await liveSearch(env,s,query);}catch{trace(s,'ima 检索异常','关键词服务暂不可用，继续检索当前项目目录和文字缓存。');}
  const hits=scoreIndex(index,query,6),pieces=[];
@@ -79,7 +79,7 @@ export async function readTool(env,s,args) {
  const target=String(args.name||'').trim(),id=String(args.media_id||'');
  const allowed=s.catalogue;
  const matches=id?allowed.filter(d=>d.mediaId===id):allowed.filter(d=>d.name===target);
- if(!matches.length&&target.length>=2)matches.push(...allowed.filter(d=>d.name.includes(target)));
+ if(!id&&!matches.length&&target.length>=2)matches.push(...allowed.filter(d=>d.name.includes(target)));
  if(matches.length!==1)return matches.length?'同名或相似文件有多个，请指定 media_id：\n'+matches.map(d=>d.name+' | '+d.mediaId).join('\n'):'当前项目没有该文件；请先检索准确文件名。';
  const doc=matches[0],index=await indexFor(env,s.project).catch(()=>({docs:[]}));
  const indexed=index.docs.find(d=>d.mediaId===doc.mediaId),cache=indexed?.chunks||[];

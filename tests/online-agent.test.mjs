@@ -5,6 +5,8 @@ import {scoreIndex,cloudQueries} from '../cloud-functions/_lib/retrieval.js';
 import {parseOriginal,downloadOriginal} from '../cloud-functions/_lib/original.js';
 import {zipSync,strToU8} from 'fflate';
 import {onRequest} from '../cloud-functions/api/[[default]].js';
+import {reconcileSavedState} from '../dist/session-data.js';
+import {fileLocation,sourceLocations} from '../dist/file-location.js';
 const env={DEEPSEEK_API_KEY:'unit-test-only-key',IMA_API_KEY:'unit-test-only-ima'};
 function state(){return {version:'agent-v3-20261107',created:Date.now(),project:'ruibang',question:'开工日期',round:0,reads:0,trace:[],evidence:[],candidates:[],catalogue:[],messages:[{role:'system',content:'fixture'}],pending:[]};}
 test('encrypted continuation rejects tampering, wrong keys and expired states',()=>{
@@ -48,4 +50,13 @@ test('health checks never invoke billable models or reveal credentials; unsuppor
   const health=await onRequest({env,request:new Request('https://example.test/api/health')});const text=await health.text();assert(!text.includes(env.DEEPSEEK_API_KEY));assert(text.includes('node-cloud'));
   const bad=await onRequest({env,request:new Request('https://example.test/api/ask',{method:'POST',body:JSON.stringify({project:'unknown',question:'test'})})});assert.equal(bad.status,502);assert((await bad.json()).message.includes('请选择'));
  }finally{globalThis.fetch=original;}
+});
+test('cloud catalogue refresh preserves answer snapshots and stable citation numbers',()=>{
+ const doc={id:'file-test',project:'ruibang',name:'许可.pdf',path:'瑞邦国际大厦/报建/许可.pdf',source:'ima',chunks:[]};
+ const source={citation:7,doc:{...doc,source:'index-cache'},chunk:{location:'第1页',text:'缓存原文'}};
+ const history=[{project:'ruibang',messages:[{result:{text:'原回答[7]',sources:[source]}}]}];
+ const saved=reconcileSavedState([doc],history,[]).history[0].messages[0].result;
+ assert.equal(saved.text,'原回答[7]');assert.equal(saved.sources[0].chunk.text,'缓存原文');assert(saved.sources[0].snapshot);
+ assert.equal(fileLocation(doc).path,'/AI/瑞邦国际大厦/报建/许可.pdf');assert(sourceLocations(saved.sources).includes('>7</span>'));
+ assert.equal(reconcileSavedState([],history,[]).history[0].messages[0].result.sources.length,0);
 });

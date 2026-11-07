@@ -5,6 +5,7 @@ export function fileLocation(doc,{root='/AI'}={}){
  const project=PROJECTS.find(p=>p.id===doc?.project&&p.connected);
  if(!project||doc.imported||!doc.path)return null;
  const parts=String(doc.path).replaceAll('\\','/').split('/');
+ if([project.folder,project.imaFolder,project.baiduFolder].includes(parts[0]))parts.shift();
  const rootParts=String(root).split('/').filter(Boolean);
  if(!parts.length||[...rootParts,project.baiduFolder,...parts].some(p=>!p||p==='.'||p==='..'||/[\u0000-\u001f]/.test(p)))return null;
  const fullPath='/'+[...rootParts,project.baiduFolder,...parts].join('/');

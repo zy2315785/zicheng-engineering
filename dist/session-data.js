@@ -7,6 +7,12 @@ export function reconcileSavedState(documents,history,favorites) {
     const sources=(message.result.sources??[]).flatMap(source=>{
       const current=known.get(source.doc?.id);
       if(!current||current.project!==session.project){changed=true;return []}
+      // A cloud catalogue contains metadata only. It cannot prove that a saved
+      // excerpt disappeared. Preserve it as a dated snapshot while the file exists.
+      if(current.source==='ima'&&['ima','index-cache'].includes(source.doc?.source)){
+        const {chunks,...metadata}=current;
+        return [{...source,doc:{...metadata,source:source.doc.source},chunk:source.chunk,snapshot:true}];
+      }
       let chunk=null;
       if(source.chunk){
         chunk=current.chunks?.find(c=>c.location===source.chunk.location&&c.text===source.chunk.text);
