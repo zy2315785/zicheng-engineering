@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {PROJECTS,answerQuestion,searchDocuments,escapeHtml,planIntent,dateSpan,localToday} from '../dist/search.mjs';
-import {reconcileSavedState} from '../dist/session-data.mjs';
-const docs=JSON.parse(fs.readFileSync(new URL('../dist/project-data.json',import.meta.url),'utf8')).documents;
+import {PROJECTS,answerQuestion,searchDocuments,escapeHtml,planIntent,dateSpan,localToday} from '../dist/search.js';
+import {reconcileSavedState} from '../dist/session-data.js';
+import {docs} from './fixture-documents.mjs';
 test('项目清单完整，瑞邦与火炬已接入原始目录',()=>{
  assert.equal(PROJECTS.length,11);
  assert.equal(PROJECTS.filter(p=>p.connected).length,2);
@@ -52,7 +52,7 @@ test('补充项目文本可以查询，原项目数据隔离',()=>{
  const a=answerQuestion([...docs,supplemental],'质量巡检由谁组织？',{project:'changshui'});
  assert.equal(a.sources.length,1);assert.equal(a.sources[0].doc.id,'test');
 });
-test('删除文件退出索引，新增进度计划已接入',()=>{
+test('私有目录集成：删除文件退出索引，新增进度计划已接入',{skip:!process.env.TEST_PRIVATE_DATA},()=>{
  const source=fileURLToPath(new URL('../../瑞邦国际大厦/',import.meta.url));
  assert.ok(docs.every(d=>fs.existsSync(path.join(path.dirname(source),PROJECTS.find(p=>p.id===d.project).folder,d.path))));
 

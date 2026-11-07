@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import {normalizeCitations,readApiConfig,activeProvider,bindCitations} from '../api-bridge.mjs';
 import {buildPrompt} from '../prompt.mjs';
 
-const docs=JSON.parse(fs.readFileSync(new URL('../dist/project-data.json',import.meta.url),'utf8')).documents;
+import {docs} from './fixture-documents.mjs';
 
 test('越界出处编号被剥离，有效编号保留',()=>{
  const text='依据施工许可办理资料[1]，还需环评批复[2]，另有不存在的第三份[7]。';

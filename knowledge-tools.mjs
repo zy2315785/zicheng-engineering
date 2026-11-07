@@ -7,7 +7,7 @@ import {Readable,Transform} from 'node:stream';
 import {APP_ROOT,AI_ROOT,localDocumentPath,normalizeName,projectConfig} from './project-files.mjs';
 import {searchImaDetailed,cloudConfig} from './cloud-sources.mjs';
 import {fetchBaiduFile} from './baidu-drive.mjs';
-import {searchDocuments} from './dist/search.mjs';
+import {searchDocuments} from './dist/search.js';
 
 export const TOOLS=[
  {type:'function',function:{name:'search_docs',description:'检索当前项目 ima 云端资料并结合本地镜像。可换关键词反复查找。',parameters:{type:'object',properties:{query:{type:'string'},category:{type:'string'}},required:['query']}}},

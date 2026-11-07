@@ -1,4 +1,4 @@
-import {PROJECTS} from './dist/search.mjs';
+import {PROJECTS} from './dist/search.js';
 
 const WEEK=['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
 

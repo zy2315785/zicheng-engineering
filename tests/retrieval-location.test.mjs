@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {planImaQueries} from '../ima-query.mjs';
 import {searchImaDetailed,imaCall} from '../cloud-sources.mjs';
-import {fileLocation,sourceLocations} from '../dist/file-location.mjs';
+import {fileLocation,sourceLocations} from '../dist/file-location.js';
 import {parseRetrievalPlan,retrievalPlanMessages} from '../retrieval-plan.mjs';
 import {planImaRetrieval,askWithAgent} from '../api-bridge.mjs';
 
@@ -43,7 +43,7 @@ test('回答仅显示去重后的文件位置，保留全部引用编号和页�
  assert.equal((html.match(/class="source-location-row"/g)||[]).length,1);
  assert.match(html,/第1页 · 第2页/);assert.match(html,/>1<\/span>/);assert.match(html,/>2<\/span>/);
  assert.ok(!html.includes('不应在页面显示'));assert.ok(!html.includes('<img'));
- assert.match(html,/许可&lt;img/);assert.match(html,/\/api\/download\/permit/);
+ assert.match(html,/许可&lt;img/);assert.match(html,/\/api\/file\?id=permit/);
  assert.ok(!html.includes('打开网盘'));assert.ok(!html.includes('https://pan.baidu.com'));assert.match(html,/下载原件/);
 });
 

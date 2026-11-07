@@ -6,8 +6,8 @@ import {validateRelative,allowedDownloadURL,baiduRequest} from '../baidu-drive.m
 import {linkCloudToLocal} from '../knowledge-tools.mjs';
 import {cloudStatus} from '../cloud-sources.mjs';
 import {askWithAgent,bindCitations} from '../api-bridge.mjs';
-import {formatAnswer} from '../dist/answer-format.mjs';
-const docs=JSON.parse(fs.readFileSync(new URL('../dist/project-data.json',import.meta.url))).documents;
+import {formatAnswer} from '../dist/answer-format.js';
+import {docs} from './fixture-documents.mjs';
 
 test('百度目录与下载请求遇到短暂网络故障会有限重试，永久HTTP错误不重复访问',async()=>{
  let calls=0;const sleep=async()=>{};
@@ -29,7 +29,7 @@ test('模型答案表格可读，外部文本中的脚本与HTML不会执行',()
  const html=formatAnswer('## 结论\n**依据**\n| 文件 | 内容 |\n|---|---|\n| 原文 | <img src=x onerror=alert(1)> |');
  assert.match(html,/<table/);assert.match(html,/<strong>依据<\/strong>/);assert.ok(!html.includes('<img'));assert.match(html,/&lt;img/);
 });
-test('两个项目原件均在各自目录内解析，同名文件不会混入其他项目',()=>{
+test('私有目录集成：两个项目原件解析边界',{skip:!process.env.TEST_PRIVATE_DATA},()=>{
  for(const project of ['ruibang','huoju']){
   const doc=docs.find(d=>d.project===project&&d.type==='pdf');
   assert.ok(localDocumentPath(doc).includes(projectConfig(project).folder));

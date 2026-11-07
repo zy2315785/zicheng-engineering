@@ -3,5 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {"start": "node server.mjs", "test": "node --test tests/*.test.mjs"}
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@edgeone/pages-blob": "0.0.19",
+    "fast-xml-parser": "5.12.0",
+    "fflate": "0.8.3",
+    "unpdf": "1.4.0"
+  }
 }

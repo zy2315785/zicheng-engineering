@@ -1,0 +1,6 @@
+{
+  "outputDirectory": "dist",
+  "cloudFunctions": {
+    "nodejs": {"maxDuration": 120}
+  }
+}

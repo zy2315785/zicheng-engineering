@@ -1,93 +1,58 @@
-# 部署说明（GitHub + EdgeOne Pages）
+# 子城联合工程部 · EdgeOne 中国站部署
 
-本目录是从 `zicheng-engineering/` 分离出的**可公开/可推送版本**，只含代码与前端发布物。
-本地后台、运行时、凭证、项目原件均不在其中。
+生产项目 `zicheng-engineering`，项目 ID `makers-cnwks8jmg4xl`。GitHub 仓库 `zy2315785/zicheng-engineering` 已公开，完整正文和凭证保留在私有存储。
 
-## 一、仓库里有什么
+## 运行结构
 
-| 目录 / 文件 | 用途 | 去向 |
-|---|---|---|
-| `*.mjs`（根目录 9 个） | 本机后台：服务、模型桥接、ima 与百度对接、检索规划 | 仅 GitHub |
-| `scripts/`（8 py + 4 mjs） | 文档解析、索引、OCR、便携打包、验证 | 仅 GitHub |
-| `tests/`（4 个） | Node 原生测试，`npm test` | 仅 GitHub |
-| `dist/` | 纯静态前端 + 已生成的资料快照 | GitHub + EdgeOne |
-| `projects.json` | 11 个项目清单与目录映射 | 两者都要 |
-| `package.json` / `.gitignore` / `.gitattributes` | 工程配置 | 仅 GitHub |
-| `.env.example` | 环境变量样例，不含真实值 | 仅 GitHub |
-| `.openai/hosting.json` | 静态目录声明（`dist`） | 仅 GitHub |
+- `dist/`：网页和脱敏目录；启动后从 `/api/documents` 同步实际 ima 目录。
+- `cloud-functions/api/[[default]].js`：Node.js 云函数，提供目录、原件下载、分步 Agent。
+- `cloud-functions/_lib/agent.js`：DeepSeek Flash 高强度思考，保留每轮完整推理字段和全部工具响应，最多十轮查阅。
+- `cloud-functions/_lib/original.js`：通过 ima 官方签名地址与必要请求头读取中文 PDF 文本层、DOCX、XLSX。扫描页使用已有逐页转写缓存，未实现实时在线 OCR。
+- 私有 Blob `zc-index/v2/{ruibang,huoju}.json`：带页码、路径、关键词、来源和内容哈希的文字缓存，片段不超过 1800 字符。
 
-被有意排除（不会出现在仓库里）：
+提问访问 `/api/ask`，然后连续访问 `/api/agent/step`。每个请求执行一轮模型调用或一个工具，避免整段查阅挤在一次函数中。会话状态采用 AES-256-GCM 加密验证，30 分钟有效。浏览器只在内存中转发密文游标，不展示内部推理，不要将游标写入日志。
 
-- `.local/`：含 DeepSeek key 明文、ima 凭证、百度 refresh_token
-- `runtime/`：492 MB 的 Node + Python 二进制
-- `瑞邦国际大厦/`、`火炬…项目/`：120+ 份项目原件
-- `tmp/`、`output/`、`*.log`、`*.zip`
+ima 的 `search_knowledge` 是关键词接口，并非客户端内置语义问答。系统会更换关键词、检索当前项目目录和文字缓存，再实际打开文件。目录命中与正文证据明确区分，结果严格限定当前项目。
 
-## 二、⚠️ 关于 dist/project-data.json
+## 部署
 
-这份 2.2 MB 的 JSON 是静态站的**全部内容来源**，里面包含 169 份真实项目文件的
-文件名、路径和正文摘录（工期表、审批信息等）。
+选择 Other 框架，项目根目录为仓库根目录，输出目录 `dist`。部署必须包含云函数；只上传 `dist` 只有网页。
 
-因此：
+`edgeone.json` 将 Node 云函数最大执行时间设为 120 秒。模型单次调用超时 95 秒，工具独立执行。
 
-1. **仓库必须设为 Private。**
-2. 若确实要建公开仓库，先执行脱敏（保留结构，抹掉文件名与正文）：
+| 后台环境变量 | 说明 |
+|---|---|
+| `DEEPSEEK_API_KEY` | 模型密钥 |
+| `DEEPSEEK_MODEL` | `deepseek-flash` |
+| `DEEPSEEK_BASE` | 默认 `https://api.deepseek.com` |
+| `DEEPSEEK_MAX_TOKENS` | 每轮输出预算，默认 8192、最高 16384，不代表上下文窗口 |
+| `IMA_CLIENT_ID` / `IMA_API_KEY` | ima 开放平台凭证 |
+| `IMA_KB_NAME` | 默认 `子城` |
+| `AGENT_SESSION_SECRET` | 可选；未设置时从现有后台凭证派生会话加密密钥 |
+| `REQUIRE_AUTH` | 保留既有访问策略；设为 `1` 时使用 `ACCESS_USER` / `ACCESS_PASS` |
 
-   ```bash
-   node scripts/sanitize-project-data.mjs           # 先预览会抹掉多少
-   node scripts/sanitize-project-data.mjs --write   # 确认后执行，自动备份原文件
-   ```
+部署内 Blob 通过官方 `@edgeone/pages-blob` 自动认证。本机调试可通过进程环境提供 `BLOB_TOKEN` / `BLOB_PROJECT_ID`，不要将长期令牌嵌入代码。
 
-3. EdgeOne 站点如果对外开放，同样要加访问限制，否则任何人拿到链接都能下载这份 JSON。
+原件下载沿用当前 ima 通道，只显示“下载原件”；本次未切换到百度下载。
 
-## 三、推到 GitHub
+## 验证和维护
 
-```bash
-git config --global --add safe.directory "C:/Users/94525/Desktop/AI/zicheng-engineering"
-cd "C:/Users/94525/Desktop/AI/github-zicheng-engineering"
-git init -b main
-git add -A
-git commit -m "chore: 子城联合工程部工程知识助手 源码与静态发布物"
-git remote add origin https://github.com/<你的账号>/<仓库名>.git
-git push -u origin main
+```powershell
+npm ci
+npm test
+node scripts/dev-cloud.mjs <私有环境文件>
 ```
 
-创建远端仓库时选 **Private**，不要勾选自动生成 README / .gitignore，避免冲突。
+默认预览 `http://127.0.0.1:4175`，运行同一份云端代码。`/api/health` 不调用模型；加 `?check=storage` 可验证两个私有索引。
 
-## 四、部署到 EdgeOne Pages
+自动测试使用合成正文，避免在公开仓库泄露资料。两项本机原件集成检查仅在 `TEST_PRIVATE_DATA=<本地完整资料索引路径>` 时执行。
 
-1. 控制台 → Pages → 新建项目 → 导入 Git 仓库，选刚推的仓库与 `main` 分支。
-2. 构建配置：
-   - 框架预设：**其他 / None**
-   - 构建命令：**留空**
-   - 输出目录：**`dist`**
-   - 根目录：**`/`**
-3. 部署完成后访问分配的域名，应看到工作台首页。
-
-静态模式下会自动降级：`dist/app.mjs` 只在 `127.0.0.1` / `localhost` 下才请求
-`/api/health`，线上不会出现接口报错。此时「提问」不具备真实检索能力，只展示
-已生成的资料快照，这属于预期行为。
-
-只想快速试预览，也可以把 `dist` 目录直接拖拽上传，跳过 Git 集成。
-
-## 五、本地完整功能（后台）
-
-静态站不含后台能力。完整问答仍需在本机运行：
-
-```bash
-cp .env.example .env      # 填 ZC_API_KEY 等，或在网页「云端连接」里配置
-node server.mjs           # 默认 http://127.0.0.1:4173
+```powershell
+python scripts/build-index-v2.py --private-root <私有备份目录> --output <私有输出目录>
+# 上传凭证从进程环境 BLOB_TOKEN 读取，不要在命令中粘贴密钥。
+node scripts/upload-private-index.mjs <私有输出目录>
 ```
 
-需要 `runtime/`（Node 与 Python）以及两个项目原件目录，这些都在原 `AI` 文件夹里，
-不在本仓库中。
+索引按项目与相对路径匹配 ima media ID；同名有歧义就停止，不跨项目猜测。逐页转写保留页码，长段无损分割。新版本上传到 `v2/`，旧版本保留以便回退。
 
-## 六、后续让后台也上线
-
-EdgeOne 的运行时无法满足本后台的三个硬性依赖：Python 文档解析与 OCR、
-本机磁盘上的项目原件、分钟级的单次请求。可行路径是把后台部署到一台常开的服务器：
-
-- 安装 Node 与 Python，上传 `server.mjs` 与 `scripts/`
-- 项目原件放到服务器数据盘，修改 `projects.json` 里的 `folder`
-- 凭证改为环境变量 `ZC_API_KEY` / `IMA_OPENAPI_CLIENTID` / `IMA_OPENAPI_APIKEY`
-- EdgeOne 只托管前端，`/api/*` 反代到服务器
+中国站 MCP 使用腾讯官方 `TencentEdgeOne/edgeone-makers-mcp`，区域 `china`。代码部署通过 MCP，环境变量等管理通过官方 CLI 或中国站控制台。

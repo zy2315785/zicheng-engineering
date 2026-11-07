@@ -13,15 +13,27 @@ function localAnswer(documents,question,options){
   };
 }
 
-async function askServer(question,options){
-  const res=await fetch('/api/ask',{
+async function post(url,body){
+  const res=await fetch(url,{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({question,project:options.project,history:options.history??[]})
+    body:JSON.stringify(body),
+    signal:AbortSignal.timeout(115000)
   });
-  if(!res.ok)throw new Error('ask '+res.status);
   const data=await res.json();
-  if(!data||typeof data.text!=='string'||!Array.isArray(data.sources))throw new Error('bad payload');
+  if(!res.ok||data?.ok===false)throw new Error(data?.message||'本次云端问答未完成，请重试。');
+  return data;
+}
+async function askServer(question,options){
+  let data=await post('/api/ask',{question,project:options.project,history:options.history??[]});
+  // Each request executes one model round or one tool. Long investigations do not
+  // depend on a single function invocation. The cursor is authenticated ciphertext.
+  for(let step=0;data.pending&&step<95;step++){
+    options.onProgress?.({trace:data.trace||[],rounds:data.rounds||0});
+    data=await post('/api/agent/step',{cursor:data.cursor});
+  }
+  if(data.pending)throw new Error('查阅步骤达到上限，请缩小问题范围后重试。');
+  if(typeof data.text!=='string'||!Array.isArray(data.sources))throw new Error('云端返回内容不完整，请重试。');
   return data;
 }
 
@@ -29,7 +41,7 @@ export async function retrieveAnswer(documents,question,options={}){
   if(location.protocol==='file:')return localAnswer(documents,question,options);
   try{
     return await askServer(question,options);
-  }catch{
-    return localAnswer(documents,question,options);
+  }catch(error){
+    return {text:error?.message||'云端问答未完成，请重试。',sources:[],model:{provider:'DeepSeek',connected:false},error:true};
   }
 }

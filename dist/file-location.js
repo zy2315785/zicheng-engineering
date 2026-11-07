@@ -17,8 +17,8 @@ export function sourceLocations(sources=[],{root='/AI'}={}){
  sources.forEach((source,index)=>{
   const key=source.doc.project+'|'+source.doc.path+'|'+source.doc.id;
   if(!groups.has(key))groups.set(key,{doc:source.doc,refs:[],locations:new Set()});
-  const group=groups.get(key);group.refs.push(index+1);
-  if(source.chunk?.location)group.locations.add(source.chunk.location);
+  const group=groups.get(key);group.refs.push(source.citation??index+1);
+  if(source.chunk?.location)group.locations.add(source.chunk.location+(source.doc.source==='index-cache'?'（文字缓存）':''));
  });
  if(!groups.size)return '';
  return '<section class="source-locations" aria-label="回答依据的文件位置"><div class="source-location-heading">文件位置 <span>ima · 原件可追溯</span></div>'+[...groups.values()].map(({doc,refs,locations})=>{
