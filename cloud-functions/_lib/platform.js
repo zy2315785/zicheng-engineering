@@ -166,28 +166,27 @@ async function buildCatalogue(env) {
   };
 }
 
-const CACHE_KEY = 'https://zc-internal.cache/api-documents-v2';
-const CACHE_SECONDS = 600;
-
-// 目录结果缓存 10 分钟，避免每次打开页面都完整遍历一遍 ima（会触发频率限制）。
-async function getCatalogue(env) {
-  let cache = null;
-  try { cache = typeof caches !== 'undefined' ? caches.default : null; } catch { cache = null; }
-  if (cache) {
-    try {
-      const hit = await cache.match(CACHE_KEY);
-      if (hit) return await hit.json();
-    } catch { /* 缓存不可用时直接走实时请求 */ }
-  }
-  const data = await buildCatalogue(env);
-  if (cache) {
-    try {
-      await cache.put(CACHE_KEY, new Response(JSON.stringify(data), {
-        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `max-age=${CACHE_SECONDS}` },
-      }));
-    } catch { /* 写入失败不影响本次返回 */ }
-  }
-  return data;
+// Node runtime cache + private persistent metadata snapshot (no document bodies).
+const catalogueMemory=new Map();
+const CATALOGUE_KEY='catalogue-v3.json';
+function indexStore(env){return env.BLOB_TOKEN?getStore({name:BLOB_STORE,projectId:env.BLOB_PROJECT_ID||BLOB_PROJECT,token:env.BLOB_TOKEN}):getStore(BLOB_STORE);}
+async function enrichCatalogue(env,data){
+ const indexes=await Promise.all(['ruibang','huoju'].map(p=>loadIndex(env,p).catch(()=>null)));
+ const indexed=new Map(indexes.flatMap(i=>i?.docs||[]).map(d=>[d.mediaId,d]));
+ return {...data,documents:data.documents.map(d=>{const match=indexed.get(d.id);return {...d,category:match?.category||category(d.path.split('/').slice(1).join('/')),hasText:match?Boolean(match.chunks?.length):false,status:match?.chunks?.length?'indexed':'catalog'};})};
+}
+async function getCatalogue(env,{refresh=false}={}){
+ const key=env.IMA_CLIENT_ID||'default',old=catalogueMemory.get(key);
+ if(!refresh&&old&&Date.now()-old.time<60000)return old.data;
+ if(old?.pending)return old.pending;
+ const pending=(async()=>{
+  if(!refresh){try{const saved=await indexStore(env).get(CATALOGUE_KEY,{type:'json'});if(saved?.documents?.length){catalogueMemory.set(key,{time:Date.now(),data:saved});return saved;}}catch{}}
+  const data=await enrichCatalogue(env,await buildCatalogue(env));
+  await indexStore(env).setJSON(CATALOGUE_KEY,data);
+  catalogueMemory.set(key,{time:Date.now(),data});return data;
+ })();
+ catalogueMemory.set(key,{...old,pending});
+ try{return await pending;}catch(error){if(old?.data){catalogueMemory.set(key,old);return {...old.data,syncFailed:true};}catalogueMemory.delete(key);throw error;}
 }
 
 async function findKnowledgeBase(env) {

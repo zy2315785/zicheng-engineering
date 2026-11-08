@@ -10,7 +10,7 @@ export async function onRequest({request,env}) {
    if(url.searchParams.get('check')==='storage')report.index=await Promise.all(Object.keys(PROJECTS).map(async project=>{try{const data=await loadIndex(env,project);return {project,ready:true,files:data.docs.length};}catch{return {project,ready:false};}}));
    return json(report);
   }
-  if(route==='/api/documents')return json(await getCatalogue(env));
+  if(route==='/api/documents')return json(await getCatalogue(env,{refresh:url.searchParams.get('refresh')==='1'}));
   if(route==='/api/cloud/status'){
    let ready=false;try{await findKnowledgeBase(env);ready=true;}catch{}
    return json({ima:{configured:Boolean(env.IMA_CLIENT_ID),ready,projects:Object.keys(PROJECTS).map(id=>({id}))},model:{installed:Boolean(env.DEEPSEEK_API_KEY)},baidu:{connected:false}});
