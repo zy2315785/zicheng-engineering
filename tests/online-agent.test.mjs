@@ -8,6 +8,11 @@ import {onRequest} from '../cloud-functions/api/[[default]].js';
 import {reconcileSavedState} from '../dist/session-data.js';
 import {fileLocation,sourceLocations} from '../dist/file-location.js';
 const env={DEEPSEEK_API_KEY:'unit-test-only-key',IMA_API_KEY:'unit-test-only-ima'};
+test('full-width model citations retain the original file source',async()=>{
+ const original=globalThis.fetch,s=state();s.reads=1;s.evidence=[{doc:{mediaId:'file-1',name:'测试许可.pdf',path:'测试许可.pdf'},chunk:{loc:'第1页',text:'测试原文'},source:'ima-original'}];
+ globalThis.fetch=async()=>Response.json({choices:[{message:{content:'根据原件核对【1】。'},finish_reason:'stop'}]});
+ try{const result=await advanceAgent(env,seal(s,env));assert.equal(result.text,'根据原件核对[1]。');assert.equal(result.sources.length,1);assert.equal(result.sources[0].doc.id,'file-1');}finally{globalThis.fetch=original;}
+});
 function state(){return {version:'agent-v3-20261107',created:Date.now(),project:'ruibang',question:'开工日期',round:0,reads:0,trace:[],evidence:[],candidates:[],catalogue:[],messages:[{role:'system',content:'fixture'}],pending:[]};}
 test('encrypted continuation rejects tampering, wrong keys and expired states',()=>{
  const s=state(),token=seal(s,env);assert.deepEqual(unseal(token,env),s);assert(!token.includes(s.question));

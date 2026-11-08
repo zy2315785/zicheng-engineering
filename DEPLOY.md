@@ -2,6 +2,8 @@
 
 生产项目 `zicheng-engineering`，项目 ID `makers-cnwks8jmg4xl`。GitHub 仓库 `zy2315785/zicheng-engineering` 已公开，完整正文和凭证保留在私有存储。
 
+2026-11-08：正式域名 `mage1993.us.ci` 接入中国站账户下的境外节点项目 `zicheng-engineering-web`（`makers-ldtutzcdfvms`），同样关联此仓库 main。原项目保留。两个项目各自保存 `zc-index` 私有数据，更新索引时需同时同步。DNS CNAME 为 `mage1993.us.ci.pages.dnsoe4.com`，域名归属验证主机为 `edgeonereclaim.mage1993.us.ci`。HTTPS 使用 EdgeOne 自动申请、续期与部署的免费证书。
+
 ## 运行结构
 
 - `dist/`：网页和脱敏目录；启动后从 `/api/documents` 同步实际 ima 目录。

@@ -149,7 +149,7 @@ export async function advanceAgent(env,token,dependencies={}) {
   s.pending=calls;s.round++;trace(s,'Agent 查阅',`第 ${s.round} 轮 · ${calls.length} 项工具操作`);return progress(s,env);
  }
  if(!s.reads&&s.candidates.length&&!final){s.messages.push({role:'assistant',content:message.content||''});s.messages.push({role:'user',content:'请先调用 read_document 打开相关文件核对正文，再提交结论。'});s.round++;return progress(s,env);}
- const text=String(message.content||'').trim();if(!text)throw new Error('模型未生成完整答案，请重试');
+ const text=String(message.content||'').trim().replace(/【(\d{1,2})】/g,'[$1]');if(!text)throw new Error('模型未生成完整答案，请重试');
  if(payload.choices?.[0]?.finish_reason==='length')throw new Error('模型输出达到长度限制，请缩小问题范围后重试');
  trace(s,'完成核对',`${s.round} 轮工具查阅 · ${s.reads} 次打开文件`);
  const cited=new Set([...text.matchAll(/\[(\d{1,2})\]/g)].map(m=>Number(m[1])));
